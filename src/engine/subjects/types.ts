@@ -1,4 +1,5 @@
-import type { Message, Phase, TeachingAction, TeachingStage } from "../types";
+import type { Message, Phase, Strategy, TeachingAction, TeachingMemory, TeachingStage, VisualCue } from "../types";
+import type { AffectKind } from "../affect";
 import type { ArithmeticClaim } from "./text";
 
 export type LessonId = "algebra" | "geometry" | "physics";
@@ -9,6 +10,8 @@ export interface SubjectProblem {
   id: string;
   /** guided = solved together with hints; check = a fresh one to try alone. */
   role: "guided" | "check";
+  /** guided practice → independent practice (same relationship, new numbers) → transfer (a different relationship). */
+  stage?: "guided" | "independent" | "transfer";
   /** Question type, which selects the verifier branch (e.g. "two-angles", "net-force", "balanced-moving"). */
   kind: string;
   /** What the tutor asks. */
@@ -53,6 +56,8 @@ export interface SubjectReading {
     | "ack"
     | "incomplete"
     | "off_topic"
+    | "affect"
+    | "thinking"
     | "unclear";
   value?: number;
   direction?: Direction;
@@ -68,6 +73,10 @@ export interface SubjectReading {
   confidence: number;
   question: boolean;
   frustrated: boolean;
+  /** How the student said they feel, if they did. */
+  affect?: AffectKind;
+  /** The student asked for the answer outright. */
+  asksAnswer?: boolean;
 }
 
 export interface SubjectCheck {
@@ -103,6 +112,12 @@ export interface SubjectMove {
   attempt?: boolean;
   /** This turn is help (counts against "solved alone"). */
   help?: boolean;
+  /** The approach this move uses (teaching memory). */
+  strategy?: Strategy;
+  /** A whiteboard picture this move switches to. */
+  visual?: VisualCue;
+  /** A small sub-question this move asks ("which push is stronger?"); the next answer is read against it. */
+  awaiting?: string;
 }
 
 export interface SubjectState {
@@ -131,4 +146,8 @@ export interface SubjectState {
   transcript: Message[];
   modelCalls?: number;
   lastEventId?: string;
+  /** What has been tried and how the student is doing on this problem. */
+  teaching?: TeachingMemory;
+  /** A sub-question the tutor is waiting on (set by the last move), e.g. "stronger_side". */
+  awaiting?: { kind: string; turn: number };
 }

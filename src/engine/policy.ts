@@ -2,7 +2,9 @@ import { Fraction } from "./fraction";
 import { parseEquation, evaluate, type Equation } from "./algebra";
 import { MISCONCEPTIONS, fillTemplate, normalize, type MisconceptionId, type Normal } from "./misconceptions";
 import type { Problem } from "./problems";
-import type { Decision, FocusRole, Observation, SessionState, TeachingStage } from "./types";
+import type { Decision, FocusRole, Observation, SessionState, TeachingMemory, TeachingStage } from "./types";
+import { affectLine } from "./affect";
+import { answerLead, confusionLead } from "./leads";
 import { noticeVariants, pick, shownStepAgain, smallExample, thinkVariants, tryVariants } from "./language/explanations";
 
 /**
@@ -105,7 +107,40 @@ function baseVars(state: SessionState, obs: Observation, ctx: PolicyContext): Re
     : `the left side of ${ctx.currentRaw} has a multiplication and ${isNeg(n.B) ? "a subtraction" : "an addition"}. Which one would you undo first?`;
   const check = obs.check?.text;
   if (check) v.check = check;
+  v.did = didWords(obs);
+  v.back = state.dialog?.lastQuestion || (n.B.isZero() ? `What undoes multiplying by ${n.A}?` : "What would you do first?");
   return v;
+}
+
+/** What the student just did, in words, from the observed operation ("took 5 away from both sides"). */
+function didWords(obs: Observation): string {
+  const o = obs.observed;
+  if (!o || !o.sameOnBoth) return "";
+  if (o.left.kind === "add") return isNeg(o.left.k) ? `took ${absF(o.left.k)} away from both sides` : `added ${o.left.k} to both sides`;
+  if (o.left.kind === "scale") {
+    const f = o.left.f;
+    const inv = new Fraction(1).div(f);
+    return f.valueOf() !== 0 && Math.abs(f.valueOf()) < 1 && inv.d === 1 ? `divided both sides by ${inv}` : `multiplied both sides by ${f}`;
+  }
+  return "";
+}
+
+/** The teaching memory, with defaults for sessions saved before it existed. */
+export function teachingOf(state: SessionState): TeachingMemory {
+  return state.teaching ?? { objective: "", confusion: 0, strategies: [], hintHistory: [], answerRequests: 0, affect: 0, offTopic: 0 };
+}
+
+/** Can the current line be drawn as a balance (bags of x and unit blocks, small whole numbers)? */
+export function balanceDrawable(n: Normal) {
+  const ok = (f: Fraction) => f.d === 1;
+  return ok(n.A) && ok(n.B) && ok(n.C) && n.A.valueOf() >= 1 && n.A.valueOf() <= 9 && n.B.valueOf() >= 0 && n.C.valueOf() >= n.B.valueOf() && n.C.valueOf() <= 40;
+}
+
+/** Opening words for a help turn: a feeling first, then an answer request, then how many times they've been stuck. */
+function helpLead(obs: Observation, tm: TeachingMemory, conf: number, visual: boolean): string {
+  if (obs.affect === "worried" || obs.affect === "frustrated") return affectLine(obs.affect, "algebra", tm.affect);
+  if (obs.request === "answer") return answerLead(tm.answerRequests);
+  return confusionLead(conf, visual);
 }
 
 export function candidates(state: SessionState, obs: Observation, ctx: PolicyContext): Decision[] {
@@ -233,6 +268,7 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
           facts: [`Current equation: ${ctx.currentRaw}`],
           template: obs.question ? "redirect_question" : "redirect",
           templateVars: vars,
+          // Variety comes from the template variant (turn number); the count lets the tone get firmer, not sillier.
         }),
       ];
 
@@ -323,7 +359,7 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
       const part = current.B.isZero() ? `why we divide by ${current.A}` : `why we start with the ${vars.bOp} ${vars.bAbs}`;
       return [
         d({
-          action: "ASK",
+          action: "CLARIFY",
           rule: "R22_CLARIFY_WHY",
           reason: `"Why?" with nothing specific to refer back to. Ask one short clarifying question instead of guessing.`,
           hintLevel: level,
@@ -339,7 +375,7 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
       if (obs.incomplete) {
         return [
           d({
-            action: "ASK",
+            action: "CLARIFY",
             rule: "R22c_INCOMPLETE",
             reason: "The message stops mid-sentence (likely cut off, or the student paused). Ask them to finish; don't guess the rest.",
             hintLevel: level,
@@ -352,7 +388,7 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
       }
       return [
         d({
-          action: "ASK",
+          action: "CLARIFY",
           rule: "R22_CLARIFY",
           reason: "Short and unclear, not maths and not a known request. Ask one clarifying question rather than guess.",
           hintLevel: level,
@@ -419,7 +455,7 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
       const st: TeachingStage = shown ? "TRY" : stage === "TRY" && level < 2 ? "THINK" : stage;
       return [
         d({
-          action: level > 0 ? "HINT" : "ASK",
+          action: "RETEACH",
           rule: `R24_REPHRASE_${shown ? "SHOWN_STEP" : st}`,
           reason: `Asked for a different explanation. Same amount of help (hint level ${level}), new angle — never the same wording again.`,
           hintLevel: level,
@@ -451,6 +487,39 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
           allowedEquations: ex.equations,
           assistive: true,
           stage: "THINK",
+        }),
+      ];
+    }
+
+    case "thinking":
+      return [
+        d({
+          action: "WAIT",
+          rule: "R10b_WAIT_ON_REQUEST",
+          reason: "The student said they're thinking. That's an explicit signal, so the move is to wait: no new information and no new question.",
+          hintLevel: level,
+          goal: "Say, in one short sentence, to take their time and that you'll check their line when they're ready. No question, no hint.",
+          template: "wait_thinking",
+          templateVars: vars,
+          assistive: false,
+        }),
+      ];
+
+    case "affect": {
+      const tm = teachingOf(state);
+      const lead = affectLine(obs.affect!, "algebra", tm.affect);
+      return [
+        d({
+          action: "ENCOURAGE",
+          rule: `R40_ENCOURAGE_${obs.affect!.toUpperCase()}`,
+          reason: `The student said how they feel (${obs.affect}), not something about the maths. Acknowledge it briefly — humour only about the subject, never about them — then hand the same question back.`,
+          hintLevel: level,
+          goal: `Acknowledge how they feel in one short sentence (${lead}), then ask: ${vars.back}`,
+          facts: [lead],
+          template: "affect",
+          templateVars: { ...vars, lead },
+          assistive: false,
+          strategy: "encourage",
         }),
       ];
     }
@@ -492,7 +561,8 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
       const assisted = state.hintsGiven > 0 || state.attempts > 0 || state.helpRequests > 0;
       return [
         d({
-          action: "VERIFY",
+          // Solving the guided problem opens an independent check; solving a check grades it.
+          action: "ASSESS",
           rule: !isTransfer ? "R1_GUIDED_SOLVED" : assisted ? "R1_TRANSFER_SOLVED_ASSISTED" : "R1_TRANSFER_SOLVED_INDEPENDENT",
           reason: !isTransfer
             ? "Guided problem solved. This is not mastery evidence on its own — verify on a fresh problem with a different surface form."
@@ -529,6 +599,11 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
     case "help":
     case "confused": {
       const confused = obs.kind === "confused";
+      const tm = teachingOf(state);
+      const conf = tm.confusion + 1; // including this message
+      const asksAnswer = obs.request === "answer";
+      const visualNext = !tm.strategies.includes("visual") && balanceDrawable(current);
+      const lead = helpLead(obs, tm, conf, visualNext);
       const choice = d({
         action: "ASK",
         rule: confused ? "R8b_CONFUSED_SMALLER_STEP" : "R8_HELP_BEFORE_TRYING",
@@ -536,20 +611,30 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
           ? "Student says they're confused. Acknowledge it and shrink the task to a single choice (NOTICE: point at the two parts of the left side)."
           : `Asked for help (${obs.request ?? "help"}) before trying. Doing the step for them would replace their thinking (the 'crutch' effect), so shrink the first step into one choice (NOTICE) instead of refusing.`,
         hintLevel: Math.max(level, 1),
-        goal: "Acknowledge the feeling without lecturing. Don't refuse rigidly. Offer one small choice about which part of the left side to deal with first.",
+        goal: `${lead ? `Start with: "${lead}" ` : ""}Acknowledge the feeling without lecturing. Don't refuse rigidly. Offer one small choice about which part of the left side to deal with first.`,
         facts: [`Equation: ${ctx.currentRaw}`],
-        template: confused ? "confused_choice" : "help_choice",
-        templateVars: vars,
+        template: lead ? "choice_plain" : confused ? "confused_choice" : obs.request === "stuck" ? "choice_dont_know" : "help_choice",
+        templateVars: { ...vars, lead },
         assistive: true,
         stage: "NOTICE",
+        strategy: "simplify",
       });
       if (state.attempts === 0 && state.hintLevel === 0) return [choice, esc(confused ? "R8b_CONFUSED_ESCALATE" : "R9_HELP_ESCALATE", "Alternative: go straight to the first rung of the hint ladder.")];
-      if (state.attempts >= REVEAL_AFTER_ATTEMPTS && !confused && !state.noReveal) {
+      // A worked solution once holding back has stopped helping: real effort (wrong attempts), or every other
+      // approach tried and the student still stuck, or repeated requests for the answer after effort.
+      const effort = state.attempts >= REVEAL_AFTER_ATTEMPTS && !confused;
+      const exhausted = conf >= 5 && state.hintLevel >= 3;
+      const askedAgain = asksAnswer && tm.answerRequests >= 2 && state.hintLevel >= 2 && state.attempts >= 2;
+      if ((effort || exhausted || askedAgain) && !state.noReveal) {
         return [
           d({
             action: "EXPLAIN",
             rule: "R9_REVEAL_AFTER_EFFORT",
-            reason: `After ${state.attempts} genuine attempts and a request for help, persisting causes frustration without learning. Show the worked solution, then require an independent transfer problem.`,
+            reason: effort
+              ? `After ${state.attempts} genuine attempts and a request for help, persisting causes frustration without learning. Show the worked solution, then require an independent transfer problem.`
+              : exhausted
+                ? `Stuck ${conf} times in a row on this problem after a simpler question, another explanation, a picture and a worked first move. Withholding more won't help: show the worked solution, then a fresh problem to do alone.`
+                : `Asked for the answer ${tm.answerRequests + 1} times after real attempts and big hints. Show the worked solution, then a fresh problem to do alone.`,
             hintLevel: 3,
             goal: "Walk through the remaining steps clearly and briefly, then say they'll try a similar one themselves.",
             facts: [`Steps: ${workedSteps(current)}`, `Answer: x = ${ctx.correct}`],
@@ -558,11 +643,12 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
             allowedEquations: workedEquations(current),
             template: "reveal",
             templateVars: { ...vars, answer: ctx.correct.toString(), worked: workedSteps(current) },
+            strategy: "worked",
           }),
           esc("R9_HELP_ESCALATE", "Alternative: one more rung instead of the full solution."),
         ];
       }
-      return [esc(confused ? "R8b_CONFUSED_ESCALATE" : "R9_HELP_ESCALATE", "Help requested after effort: the next rung of support, not the answer.")];
+      return [escalate(state, ctx, vars, confused ? "R8b_CONFUSED_ESCALATE" : "R9_HELP_ESCALATE", "Help requested after effort: the next rung of support, not the answer.", obs, { lead, conf })];
     }
 
     case "explanation": {
@@ -594,12 +680,39 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
           template,
           templateVars: { ...vars, focus },
           assistive: false,
+          strategy: "check",
         });
 
+      // The same wrong line again: the last approach didn't convince them. Change strategy instead of repeating it.
+      const tmem = teachingOf(state);
+      const same = !!obs.repeatedClaim && (tmem.strategies.includes("check") || tmem.strategies.includes("visual"));
+      if (same) {
+        const tm = tmem;
+        if (!tm.strategies.includes("visual") && balanceDrawable(current)) {
+          return [
+            d({
+              action: "VISUALIZE",
+              rule: "R7d_SAME_MISTAKE_VISUAL",
+              reason: `The same wrong line (${obs.studentRaw}) a second time: the previous explanation didn't convince them. Switch modality — the balance on the whiteboard — instead of repeating it.`,
+              hintLevel: Math.max(level, 1),
+              goal: `Say you see the same line again, so you'll try a picture. Describe the balance for ${ctx.currentRaw} and ask whether their line matches what's left after taking the same thing off both sides.`,
+              facts: [`Balance: ${current.A} bags of x and ${current.B} blocks on the left, ${current.C} blocks on the right.`],
+              template: "visual_same_line",
+              templateVars: { ...vars, ...balanceVars(current) },
+              assistive: true,
+              stage: "THINK",
+              strategy: "visual",
+              visual: "balance",
+            }),
+            esc("R7_REPEATED_ERROR", "Alternative: move up the hint ladder."),
+          ];
+        }
+        return [escalate(state, ctx, vars, "R7_REPEATED_ERROR", `The same wrong line (${obs.studentRaw}) again after a picture: move up the ladder with a different approach.`, obs, { lead: "Same line again — let me come at it differently.", conf: 0 })];
+      }
       if (obs.insistent) {
         const out = [
           obs.check
-            ? checkDecision("R4_RESPECTFUL_CHALLENGE", "Student is confident in a wrong step. Don't overrule — let the mathematics decide with a computed check.", "insist_check")
+            ? checkDecision("R4_RESPECTFUL_CHALLENGE", obs.repeatedClaim ? "The same wrong value again: the probe didn't change their mind. Switch strategy — let the mathematics decide with a computed check." : "Student is confident in a wrong step. Don't overrule — let the mathematics decide with a computed check.", obs.repeatedClaim ? "repeat_check" : "insist_check")
             : d({ action: "VERIFY", rule: "R4_RESPECTFUL_CHALLENGE", reason: "Student is confident in a wrong step; no simple numeric check exists, so test the idea.", hintLevel: Math.max(level, 1), goal: `Respect their confidence and test this idea with them: ${focus}`, facts: [focus], template: "insist_focus", templateVars: { ...vars, focus } }),
         ];
         out.push(esc("R7_REPEATED_ERROR", "Alternative: move up the hint ladder."));
@@ -626,7 +739,7 @@ function rawCandidates(state: SessionState, obs: Observation, ctx: PolicyContext
       }
       if (state.attempts === 0) {
         const out = [
-          d({ action: "ASK", rule: "R5_TARGETED_PROBE", reason: `First error, diagnosed as "${info.label}" (${dg.category}, basis: ${dg.basis ?? "value"}). A targeted question lets them find it themselves.`, hintLevel: level, goal: `Ask this kind of question without giving the answer: ${fillTemplate(info.probe, current)}`, facts: [focus], template: "probe_targeted", templateVars: { ...vars, probe: fillTemplate(info.probe, current) } }),
+          d({ action: "ASK", rule: "R5_TARGETED_PROBE", reason: `First error, diagnosed as "${info.label}" (${dg.category}, basis: ${dg.basis ?? "value"}). A targeted question lets them find it themselves.`, hintLevel: level, goal: `Ask this kind of question without giving the answer: ${fillTemplate(info.probe, current)}`, facts: [focus], template: "probe_targeted", templateVars: { ...vars, probe: fillTemplate(info.probe, current) }, strategy: "probe" }),
         ];
         if (obs.check) out.push(checkDecision("R5c_CHECK_FIRST_ERROR", "Alternative: a computed check instead of a question."));
         out.push(esc("R7_REPEATED_ERROR", "Alternative: move straight to a conceptual nudge."));
@@ -845,8 +958,11 @@ function recurringElsewhere(state: SessionState, id: MisconceptionId, problemId:
 }
 
 /** The hint ladder. Each rung gives strictly more support than the last. */
-function escalate(state: SessionState, ctx: PolicyContext, vars: Record<string, string>, rule: string, reason: string, obs?: Observation): Decision {
+function escalate(state: SessionState, ctx: PolicyContext, vars0: Record<string, string>, rule: string, reason: string, obs?: Observation, opts: { lead?: string; conf?: number } = {}): Decision {
   const { current, next } = ctx;
+  const tm = teachingOf(state);
+  const conf = opts.conf ?? 0;
+  const vars = { ...vars0, lead: opts.lead ?? "" };
   const cap = state.noReveal ? 2 : 3;
   const k = (state.explainVariant ?? 0) + 1;
   if (state.noReveal && state.hintLevel >= cap) {
@@ -861,6 +977,7 @@ function escalate(state: SessionState, ctx: PolicyContext, vars: Record<string, 
       template: "micro",
       templateVars: { ...vars, micro: text },
       stage: "TRY",
+      strategy: "named_move",
     });
   }
   // NOTICE → THINK → TRY: after pointing at the part (NOTICE, rung 1), the next help is a guiding question at the same rung.
@@ -871,7 +988,8 @@ function escalate(state: SessionState, ctx: PolicyContext, vars: Record<string, 
   if (target <= 1) {
     const check = obs?.check?.text;
     return d({
-      action: "HINT",
+      // A second "I don't know": the first explanation didn't land, so this is the idea again, differently.
+      action: conf >= 2 ? "RETEACH" : "HINT",
       rule: `${rule}_L1`,
       reason: `${reason} Rung 1: conceptual nudge${check ? " plus a computed check of their own work" : ""}.`,
       hintLevel: 1,
@@ -880,6 +998,24 @@ function escalate(state: SessionState, ctx: PolicyContext, vars: Record<string, 
       template: check ? "hint1_check" : focus ? "hint1" : "micro",
       templateVars: { ...vars, focus, micro: pick(thinkVariants(ctx), k - 1) },
       stage: "THINK",
+      strategy: "analogy",
+      assistive: true,
+    });
+  }
+  if (target === 2 && conf >= 3 && !tm.strategies.includes("visual") && balanceDrawable(current)) {
+    return d({
+      action: "VISUALIZE",
+      rule: `${rule}_L2`,
+      reason: `${reason} Rung 2, as a picture: still stuck after ${conf - 1} explanations in words, so switch to the balance on the whiteboard. The picture names the move (take the same off both sides); the student works out what's left.`,
+      hintLevel: 2,
+      goal: `Describe the balance for ${ctx.currentRaw}, say taking the same amount off both sides keeps it level, and ask what's left on each side. Don't state the result.`,
+      facts: [`Balance: ${current.A} bags of x and ${current.B} blocks on the left, ${current.C} blocks on the right.`, `Next operation: ${next.operation}`],
+      template: current.B.isZero() ? "visual_share" : "visual_balance",
+      templateVars: { ...vars, ...balanceVars(current) },
+      stage: "TRY",
+      strategy: "visual",
+      visual: "balance",
+      assistive: true,
     });
   }
   if (target === 2) {
@@ -893,6 +1029,7 @@ function escalate(state: SessionState, ctx: PolicyContext, vars: Record<string, 
       template: "hint2",
       templateVars: vars,
       stage: "TRY",
+      strategy: "named_move",
     });
   }
   return d({
@@ -905,9 +1042,14 @@ function escalate(state: SessionState, ctx: PolicyContext, vars: Record<string, 
     revealAllowed: ctx.isFinalStep,
     nextStepAllowed: true,
     allowedEquations: [next.resultRaw],
-    template: ctx.isFinalStep ? "explain_final" : "explain_step",
+    template: opts.lead && conf >= 4 ? (ctx.isFinalStep ? "explain_part_final" : "explain_part") : ctx.isFinalStep ? "explain_final" : "explain_step",
     templateVars: vars,
+    strategy: "worked_part",
   });
+}
+
+function balanceVars(n: Normal): Record<string, string> {
+  return { balA: n.A.toString(), balB: n.B.toString(), balC: n.C.toString(), balBags: n.A.eq(1) ? "one bag" : `${n.A} bags` };
 }
 
 function workedSteps(n: Normal): string {

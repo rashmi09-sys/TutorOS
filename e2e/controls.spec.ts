@@ -25,7 +25,7 @@ async function solveCurrent(page: Page) {
   return say(page, `x = ${(Number(m[5]) - b) / a}`);
 }
 
-test("complete student journey and every visible control", async ({ page, context }) => {
+test("complete student journey and every visible control", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("pageerror", (e) => consoleErrors.push(e.message));
 
@@ -34,7 +34,7 @@ test("complete student journey and every visible control", async ({ page, contex
   await page.evaluate(() => localStorage.clear());
   await page.goto("/learn/algebra");
   await expect(page.locator(".welcome").getByRole("link", { name: "All lessons" })).toBeVisible();
-  await page.getByRole("button", { name: "Start the lesson" }).click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
   await expect(page.locator(".note.active")).toContainText("3x + 5 = 20");
   await expect(page.getByLabel("Your answer or message")).toBeFocused(); // the next action is ready
 
@@ -83,8 +83,8 @@ test("complete student journey and every visible control", async ({ page, contex
   await expect(page.locator(".msg.student").filter({ hasText: "I added the 3 and the 5" })).toBeVisible();
 
   // Correct the equation, complete the guided problem
-  await expect(await say(page, "3x = 15")).toContainText(/balanced|both sides equal/);
-  await expect(await say(page, "x = 5")).toContainText("fresh one");
+  await expect(await say(page, "3x = 15")).toContainText(/balanced|both sides/);
+  await expect(await say(page, "x = 5")).toContainText("try it yourself");
   await expect(page.locator(".nb-section.past")).toContainText("with help");
 
   // Past problem expands and hides
@@ -108,7 +108,7 @@ test("complete student journey and every visible control", async ({ page, contex
   // Reload and resume mid-lesson
   await page.reload();
   await expect(page.getByText("Welcome back")).toBeVisible();
-  await expect(page.locator(".nb-section.current .nb-kicker")).toContainText("Check 1");
+  await expect(page.locator(".nb-section.current .nb-kicker")).toContainText("Try It Yourself");
 
   // Two independent mastery checks
   await solveCurrent(page);
@@ -133,41 +133,6 @@ test("complete student journey and every visible control", async ({ page, contex
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
-  // Engineer view opens in a new tab; every console tab and evidence tab works
-  const [con] = await Promise.all([context.waitForEvent("page"), page.getByRole("link", { name: "Engineer view ↗" }).click()]);
-  await con.waitForLoadState();
-  await expect(con.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
-  await expect(con.locator(".ov-lesson h1")).toHaveText("Two-step equations");
-  await expect(con.locator(".ov-recent .tl-item").first()).toBeVisible();
-  await con.getByRole("tab", { name: "Decision timeline" }).click();
-  await expect(con.locator(".tl-list .tl-item").first()).toBeVisible();
-  expect(await con.locator(".tl-list .tl-item").count()).toBe(await turnNow(page));
-  // Each turn's technical details show its own decision
-  for (const i of [1, 2, 4]) {
-    const card = con.locator(".tl-list .tl-item").nth(i);
-    const rule = (await card.locator(".tl-rule").textContent())!.trim().split(" ")[0];
-    await card.getByRole("button", { name: "Technical details" }).click();
-    await expect(card.locator(".cand.chosen")).toContainText(rule);
-  }
-  const card4 = con.locator(".tl-list .tl-item").nth(4);
-  for (const t of ["maths", "learner", "model", "raw"]) {
-    await card4.getByRole("tab", { name: new RegExp(`^${t}`) }).click();
-    await expect(card4.getByRole("tab", { name: new RegExp(`^${t}`) })).toHaveAttribute("aria-selected", "true");
-  }
-  await con.keyboard.press("ArrowDown");
-  await con.getByRole("tab", { name: "Architecture & safety" }).click();
-  await expect(con.getByRole("heading", { name: "How the tutor decides" })).toBeVisible();
-  await con.getByText("Observed vs inferred, and how mastery is measured").click();
-  await expect(con.getByText(/Inferred/).first()).toBeVisible();
-  await con.getByRole("tab", { name: "Evaluation lab" }).click();
-  await con.getByRole("button", { name: /Run comparison/ }).click();
-  await expect(con.locator(".cell.fail").first()).toBeVisible();
-  await expect(con.getByText(/Not tested — No LLM provider configured/)).toBeVisible();
-  await con.locator(".mx-algebra .cell.pass").first().click();
-  await expect(con.locator(".inspector .ih")).toContainText("pass");
-  await con.getByRole("link", { name: "← Back to the lesson" }).click();
-  await expect(con.locator(".result")).toBeVisible(); // same browser storage → same lesson
-
   // Restart
   await openMenu(page);
   await page.getByRole("button", { name: "Restart" }).click();
@@ -189,7 +154,7 @@ test("cancel a turn while it is being checked: nothing is applied and the line s
   await page.goto("/learn/algebra");
   await page.evaluate(() => localStorage.clear());
   await page.goto("/learn/algebra");
-  await page.getByRole("button", { name: "Start the lesson" }).click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
   await expect(page.locator(".note.active")).toBeVisible();
   const before = await turnNow(page);
   await page.route("**/api/turn", async (route) => {
@@ -211,7 +176,7 @@ test("reduced motion: animations are disabled", async ({ browser }) => {
   await page.goto("/learn/algebra");
   await page.evaluate(() => localStorage.clear());
   await page.goto("/learn/algebra");
-  await page.getByRole("button", { name: "Start the lesson" }).click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
   const anim = await page.locator(".note.active").evaluate((el) => getComputedStyle(el).animationName);
   expect(anim).toBe("none");
   await ctx.close();
@@ -221,7 +186,7 @@ test("keyboard only: start, answer, reach the menu and a drawer", async ({ page 
   await page.goto("/learn/algebra");
   await page.evaluate(() => localStorage.clear());
   await page.goto("/learn/algebra");
-  await page.getByRole("button", { name: "Start the lesson" }).focus();
+  await page.getByRole("button", { name: "Start Lesson" }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByLabel("Your answer or message")).toBeFocused();
   await page.keyboard.type("x = 8");

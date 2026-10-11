@@ -158,6 +158,11 @@ export function keepMathTogether(text: string): React.ReactNode {
 
 /** A short, plain-language label for what kind of help a tutor turn is. */
 export function actionLabel(m: Message) {
+  if (m.action === "VISUALIZE") return "Let's see it";
+  if (m.action === "RETEACH") return "Another way";
+  if (m.action === "ENCOURAGE") return "Fair enough";
+  if (m.action === "CLARIFY") return "Quick question";
+  if (m.action === "WAIT") return "Take your time";
   if (m.stage === "NOTICE") return "Notice";
   if (m.stage === "THINK") return m.rule === "R25_SMALL_EXAMPLE" ? "Small example" : "Think";
   if (m.stage === "TRY") return m.rule?.startsWith("R23") || m.rule?.startsWith("R27") ? "Your move" : `Try · hint ${Math.min(3, Math.max(1, m.hintLevel ?? 2))} of 3`;
@@ -168,10 +173,10 @@ export function actionLabel(m: Message) {
       return `Hint ${Math.min(3, Math.max(1, m.hintLevel ?? 1))} of 3`;
     case "EXPLAIN":
       return m.rule?.startsWith("R18") ? "The idea" : m.rule === "R9_REVEAL_AFTER_EFFORT" ? "Worked solution" : "Worked step";
+    case "ASSESS":
+      return m.rule === "R1_GUIDED_SOLVED" ? "Try It Yourself" : m.rule?.startsWith("R16") ? "How you did" : "Challenge Yourself";
     case "VERIFY":
       return m.rule?.startsWith("R1_") || m.rule?.startsWith("R16") ? "Checked" : "Let’s check";
-    case "WAIT":
-      return "Take your time";
     case "RECAP":
       return "Recap";
     default:

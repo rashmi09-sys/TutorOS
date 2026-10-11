@@ -1,11 +1,13 @@
 "use client";
 
+import { stageDone, stageLabel, stageSub } from "@/lib/stages";
 import Link from "next/link";
 import type { HelpOption } from "@/lib/helpOptions";
 import { lessonInfo } from "@/lib/lessons";
 import type { Message } from "@/engine/types";
 import type { SubjectLessonId, SubjectProblem, SubjectState } from "@/engine/subjects/types";
 import { LessonShell, type LessonAdapter, type Stop } from "./lesson/LessonShell";
+import { learningMessage, subjectEvidence } from "@/lib/evidence";
 import { ForceExplorer, ForceFigure, TriangleExplorer, TriangleFigure } from "./lesson/figures";
 
 /** Geometry and physics lessons: the shared shell, a subject figure, and the student's answers per question. */
@@ -21,6 +23,7 @@ const WHY: HelpOption = { label: "Why?", text: "Why?" };
 function subjectHelp(s: SubjectState): HelpOption[] {
   if (s.phase === "COMPLETE") return [];
   const last = [...s.transcript].reverse().find((m) => m.role === "tutor");
+  if (last?.action === "WAIT") return [];
   if (!last || last.rule === "S0_PRESENT" || /_CORRECT$/.test(last.rule ?? "")) return [HINT, STUCK];
   if (last.stage === "NOTICE") return [HINT, DIFFERENT];
   if (last.stage === "THINK") return [DIFFERENT, HINT, WHY];
@@ -44,7 +47,7 @@ function answersFor(s: SubjectState, i: number): { text: string; mark: Mark; via
     const reply = s.transcript.find((x) => x.role === "tutor" && x.turn === m.turn);
     const rule = reply?.rule ?? "";
     if (!/^(G|P)_/.test(rule) || NOT_ANSWERS.test(rule)) continue;
-    const mark: Mark = /_CORRECT$/.test(rule) ? "ok" : /(RIGHT_FLAWED|NO_DIRECTION|WRONG_DIRECTION)/.test(rule) ? "part" : "bad";
+    const mark: Mark = /(_CORRECT|_SUB_RIGHT|_SUB_SOLVED)$/.test(rule) ? "ok" : /(RIGHT_FLAWED|NO_DIRECTION|WRONG_DIRECTION)/.test(rule) ? "part" : "bad";
     out.push({ text: m.text, mark, via: m.via });
   }
   return out;
@@ -63,18 +66,34 @@ function stops(s: SubjectState): Stop[] {
     const done = r.solved || i < s.current;
     const now = i === s.current && s.phase !== "COMPLETE";
     const how = howSolved(r, i);
-    return { label: i === 0 ? "Solve together" : `Check ${i}`, sub: done ? how : i === 0 ? "with hints" : "on your own", done, now, pip: i > 0 && done ? (r.alone ? "yes" : "no") : undefined };
+    return { label: stageLabel(i), sub: done ? how : stageSub(i), done, now, pip: i > 0 && done ? (r.alone ? "yes" : "no") : undefined };
   });
 }
 
-function Figure({ p, solved }: { p: SubjectProblem; solved: boolean }) {
-  if (p.data.A !== undefined) return <TriangleFigure data={p.data} solved={solved} />;
-  return <ForceFigure spec={{ right: Number(p.data.right), left: Number(p.data.left), missing: p.data.missing === "right" ? "right" : undefined, moving: p.data.moving ? Number(p.data.moving) : undefined }} />;
+interface Live {
+  /** The tutor's latest turn on this question asked a sub-question the picture can answer by tapping. */
+  awaiting?: string;
+  visual?: Message["visual"];
+  onSay?: (t: string) => void;
 }
 
-function WorkPanel({ state, onRestart }: { state: SubjectState; hoverTurn: number | null; onRestart: () => void }) {
+function Figure({ p, solved, live }: { p: SubjectProblem; solved: boolean; live?: Live }) {
+  if (p.data.A !== undefined) return <TriangleFigure data={p.data} solved={solved} interactive={!solved} litKnown={live?.visual === "angle-sum" || live?.visual === "angles"} sumStrip={live?.visual === "angle-sum"} />;
+  const tap = live?.awaiting === "stronger_side" && live.onSay ? (dir: "right" | "left") => live.onSay!(`the push to the ${dir}`) : undefined;
+  return (
+    <div className={`force-wrap ${live?.visual ? `cue-${live.visual}` : ""}`}>
+      <ForceFigure spec={{ right: Number(p.data.right), left: Number(p.data.left), missing: p.data.missing === "right" ? "right" : undefined, moving: p.data.moving ? Number(p.data.moving) : undefined }} onTap={tap} />
+      {tap && <p className="tap-hint">Tap the stronger push.</p>}
+    </div>
+  );
+}
+
+function WorkPanel({ state, onRestart, onSay, busy }: { state: SubjectState; hoverTurn: number | null; onRestart: () => void; onSay: (t: string) => void; busy: boolean }) {
   const cur = Math.min(state.current, state.problems.length - 1);
   const complete = state.phase === "COMPLETE";
+  const from = presentedAt(state)[cur];
+  const lastTutor = [...state.transcript].reverse().find((m) => m.role === "tutor");
+  const live: Live = lastTutor && lastTutor.turn >= from ? { awaiting: lastTutor.awaiting, visual: lastTutor.visual, onSay: busy ? undefined : onSay } : {};
   return (
     <div className="sp">
       {state.problems.slice(0, complete ? state.problems.length : cur).map((p, i) => (
@@ -84,11 +103,11 @@ function WorkPanel({ state, onRestart }: { state: SubjectState; hoverTurn: numbe
         <section className="sp-current" aria-label={`Question ${cur + 1}`}>
           <p className="sp-step">
             Question {cur + 1} of {state.problems.length}
-            <span>{cur === 0 ? "Solve it together — ask for hints any time" : "On your own — hints are there if you need them"}</span>
+            <span>{stageLine(state.problems[cur], cur)}</span>
           </p>
           <p className="sp-prompt">{state.problems[cur].prompt}</p>
           <figure className="sp-figure">
-            <Figure p={state.problems[cur]} solved={false} />
+            <Figure p={state.problems[cur]} solved={false} live={live} />
           </figure>
           <Answers items={answersFor(state, cur)} />
         </section>
@@ -103,6 +122,12 @@ function WorkPanel({ state, onRestart }: { state: SubjectState; hoverTurn: numbe
       {complete && <SubjectResult state={state} onRestart={onRestart} />}
     </div>
   );
+}
+
+function stageLine(p: SubjectProblem, i: number) {
+  if (i === 0) return `${stageLabel(0)} — ask for hints any time`;
+  if (p.stage === "transfer") return `${stageLabel(2)} — a different twist. Hints are there if you need them`;
+  return `${stageLabel(1)} — a new problem. Hints are there if you need them`;
 }
 
 function Answers({ items }: { items: { text: string; mark: Mark; via?: string }[] }) {
@@ -125,7 +150,7 @@ function PastQuestion({ p, i, state }: { p: SubjectProblem; i: number; state: Su
   return (
     <details className="sp-past">
       <summary>
-        <span className="past-label">{i === 0 ? "Solved together" : `Check ${i}`}</span>
+        <span className="past-label">{stageDone(i)}</span>
         <span className="sp-past-answer">{p.answerText}</span>
         <span className={`evidence-tag ${r.alone || (i === 0 && r.hints === 0 && !r.revealed) ? "alone" : "help"}`}>{howSolved(r, i)}</span>
       </summary>
@@ -143,13 +168,41 @@ function PastQuestion({ p, i, state }: { p: SubjectProblem; i: number; state: Su
 function SubjectResult({ state, onRestart }: { state: SubjectState; onRestart: () => void }) {
   const checks = state.records.filter((_, i) => state.problems[i].role === "check");
   const alone = checks.filter((r) => r.alone).length;
-  const big = alone === checks.length ? "Got it." : alone > 0 ? "Nearly there." : "Not yet.";
+  const rows = subjectEvidence(state);
+  const msg = learningMessage(rows);
   return (
     <section className="result" role="status" aria-label="Lesson summary">
       <p className="result-kicker">End of lesson</p>
-      <h2>{big}</h2>
-      <p className="result-verdict">Checks solved without hints: {alone} of {checks.length}.</p>
-      <p className="result-evidence">A check only counts if it was solved without hints and without being shown the working. Wrong tries along the way are fine.</p>
+      <h2>{msg.heading}</h2>
+      <p className="result-verdict">{msg.text}</p>
+      <p className="result-evidence">On your own without hints: {alone} of {checks.length}. A question only counts if it was solved without hints and without being shown the working. Wrong tries along the way are fine.</p>
+      <div className="evidence">
+        <h3>What I saw</h3>
+        <table className="evidence-table">
+          <thead>
+            <tr>
+              <th scope="col">Question</th>
+              <th scope="col">Wrong tries</th>
+              <th scope="col">Hints</th>
+              <th scope="col">First try</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.problemId}>
+                <th scope="row">
+                  {stageLabel(i)}
+                  <small>{r.workedThrough ? "worked through together" : r.stage === "guided" ? "solved together" : r.independent ? "on your own" : "with help"}</small>
+                </th>
+                <td>{r.tries}</td>
+                <td>{r.hints}</td>
+                <td>{r.firstTry ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="evidence-note">This is what happened in this lesson — not a test score, and not proof it will stick.</p>
+      </div>
       <div className="result-moves">
         <span>The key idea:</span>
         <span className="move">{state.lesson === "geometry" ? "the three angles share 180°" : "opposite forces subtract; zero net force changes nothing"}</span>
@@ -171,7 +224,7 @@ function Profile({ state }: { state: SubjectState }) {
           const r = state.records[i];
           return (
             <div key={p.id} style={{ display: "contents" }}>
-              <dt>{i === 0 ? "Solved together" : `Check ${i}`}</dt>
+              <dt>{stageDone(i)}</dt>
               <dd>{r.solved ? howSolved(r, i) : i === state.current ? "in progress" : "not started"}</dd>
             </div>
           );
@@ -187,7 +240,7 @@ function Profile({ state }: { state: SubjectState }) {
 function dividers(s: SubjectState) {
   const d = new Map<number, string>();
   presentedAt(s).forEach((turn, i) => {
-    if (i > 0 && Number.isFinite(turn)) d.set(turn, `Check ${i} · on your own`);
+    if (i > 0 && Number.isFinite(turn)) d.set(turn, `${stageLabel(i)} · ${stageSub(i)}`);
   });
   return d;
 }
@@ -204,14 +257,12 @@ const base = {
 const geometryAdapter: LessonAdapter<SubjectState> = {
   ...base,
   info: lessonInfo("geometry"),
-  welcomeTitle: "Let's find some missing angles.",
   welcomePreview: <TriangleFigure data={{ A: 65, B: 40, C: 75, unknown: "C" }} />,
 };
 
 const physicsAdapter: LessonAdapter<SubjectState> = {
   ...base,
   info: lessonInfo("physics"),
-  welcomeTitle: "Let's see what forces do.",
   welcomePreview: <ForceFigure spec={{ right: 12, left: 8 }} />,
 };
 

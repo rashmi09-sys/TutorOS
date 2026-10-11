@@ -20,6 +20,7 @@ export function helpOptions(state: SessionState | null): HelpOption[] {
   if (!state || state.phase === "COMPLETE") return [];
   const last = [...state.transcript].reverse().find((m) => m.role === "tutor");
   if (!last) return [HINT, STUCK];
+  if (last.action === "WAIT") return []; // they said they're thinking: don't put buttons in their way
   const canWhy = !!whyTopic(state);
   const rule = last.rule ?? "";
   if (rule.startsWith("R1_") || rule === "R0_PRESENT_PROBLEM") return [HINT, STUCK]; // a fresh problem: nothing explained yet

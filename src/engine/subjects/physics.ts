@@ -12,6 +12,7 @@
 import type { RespondContext, SubjectModule } from "./kernel";
 import { numbersIn, pickVariant, randInt, rng } from "./text";
 import type { Direction, SubjectCheck, SubjectMove, SubjectProblem, SubjectReading } from "./types";
+import type { Strategy } from "../types";
 
 type Kind = "net-force" | "balance-missing" | "balanced-moving" | "unbalanced-rest";
 
@@ -44,36 +45,41 @@ function make(kind: Kind, id: string, role: "guided" | "check", v: Record<string
   }
 }
 
+/**
+ * Three stages. Guided: 12 N right vs 8 N left, solved together. Independent: the same relationship (net
+ * force of two opposite pushes) with new magnitudes, and the bigger push on either side. Transfer: a
+ * different relationship — the force needed to balance, or what balanced / unbalanced forces do to motion.
+ */
 export function makePhysicsProblems(seed: number): SubjectProblem[] {
   const r = rng(seed * 104729 + 3);
-  const guided = make("net-force", "f0", "guided", { right: 12, left: 8 });
-  let check1: SubjectProblem;
-  if (r() < 0.5) {
-    let a: number, b: number;
-    do {
-      a = randInt(r, 4, 24);
-      b = randInt(r, 3, 24);
-    } while (a === b || Math.abs(a - b) < 2 || Math.abs(a - b) === a || Math.abs(a - b) === b || a + b === Math.abs(a - b) || (a === 12 && b === 8));
-    check1 = make("net-force", "f1", "check", { right: a, left: b });
-  } else {
+  const guided = { ...make("net-force", "f0", "guided", { right: 12, left: 8 }), stage: "guided" as const };
+  let a: number, b: number;
+  do {
+    a = randInt(r, 4, 24);
+    b = randInt(r, 3, 24);
+  } while (a === b || Math.abs(a - b) < 2 || Math.abs(a - b) === a || Math.abs(a - b) === b || a + b === Math.abs(a - b) || (a === 12 && b === 8) || Math.abs(a - b) === 4);
+  // New directions too: about half the time the bigger push is to the left.
+  const flip = r() < 0.5;
+  const check1 = { ...make("net-force", "f1", "check", flip ? { right: Math.min(a, b), left: Math.max(a, b) } : { right: Math.max(a, b), left: Math.min(a, b) }), stage: "independent" as const };
+  let check2: SubjectProblem;
+  const pickT = r();
+  if (pickT < 1 / 3) {
     let left: number, right: number;
     do {
       left = randInt(r, 10, 25);
       right = randInt(r, 3, left - 3);
     } while (left - right === right || left - right === left);
-    check1 = make("balance-missing", "f1", "check", { left, right });
-  }
-  let check2: SubjectProblem;
-  if (r() < 0.5) check2 = make("balanced-moving", "f2", "check", { f: randInt(r, 5, 30) });
+    check2 = make("balance-missing", "f2", "check", { left, right });
+  } else if (pickT < 2 / 3) check2 = make("balanced-moving", "f2", "check", { f: randInt(r, 5, 30) });
   else {
-    let a: number, b: number;
+    let c: number, d: number;
     do {
-      a = randInt(r, 4, 25);
-      b = randInt(r, 3, 25);
-    } while (a === b);
-    check2 = make("unbalanced-rest", "f2", "check", { right: a, left: b });
+      c = randInt(r, 4, 25);
+      d = randInt(r, 3, 25);
+    } while (c === d);
+    check2 = make("unbalanced-rest", "f2", "check", { right: c, left: d });
   }
-  return [guided, check1, check2];
+  return [guided, check1, { ...check2, stage: "transfer" }];
 }
 
 const TOPICS: Array<[string, RegExp]> = [
@@ -348,6 +354,81 @@ function leaks(text: string, p: SubjectProblem): boolean {
   return new RegExp(`(starts?|begins?) (to )?mov\\w* (to the )?${p.answer.direction}`, "i").test(text);
 }
 
+const bigger = (p: SubjectProblem) => (n(p, "right") >= n(p, "left") ? "right" : "left");
+
+/** Different ways in for a student who is still stuck (see kernel.strategyLadder). None states the answer. */
+function strategy(p: SubjectProblem, s: Strategy): ReturnType<NonNullable<SubjectModule["strategy"]>> {
+  const R = n(p, "right"), L = n(p, "left");
+  const big = Math.max(R, L), small = Math.min(R, L), dir = bigger(p);
+  switch (p.kind as Kind) {
+    case "net-force":
+      if (s === "simplify") return { hintLevel: 1, text: `Imagine a tug-of-war. One team pulls right with ${R} units of force, the other pulls left with ${L}. Which team seems stronger?`, awaiting: "stronger_side", visual: "tug" };
+      if (s === "visual") return { hintLevel: 2, text: "See the two arrows on the board? One is longer. Tap the stronger force.", awaiting: "stronger_side", visual: "arrows" };
+      if (s === "worked_part") return { hintLevel: 3, text: `The push to the ${dir} is stronger, because ${big} N is more than ${small} N. Your turn: how much stronger is it?`, awaiting: "difference", visual: "arrows" };
+      return null;
+    case "balance-missing":
+      if (s === "simplify") return { hintLevel: 1, text: `Forget the numbers for a second. The left push is ${L} N and the right push is only ${R} N. Which side needs help to match?`, visual: "arrows" };
+      if (s === "analogy") return { hintLevel: 2, text: `Think of a seesaw with ${L} kg on one end and ${R} kg on the other. How much more do you add to the light end to make it level?` };
+      if (s === "visual") return { hintLevel: 2, text: "Look at the arrows on the board: the dashed one is the push we're adding. It has to make the right side as strong as the left. How big does it need to be?", visual: "arrows" };
+      if (s === "worked_part") return { hintLevel: 3, text: `The right side has to reach ${L} N, and it already has ${R} N. Your turn: how much is missing?`, visual: "arrows" };
+      return null;
+    case "balanced-moving":
+      if (s === "simplify") return { hintLevel: 1, text: `One question first: are the two forces, ${R} N forward and ${L} N back, equal or not?`, visual: "arrows" };
+      if (s === "analogy") return { hintLevel: 2, text: "Think of a hockey puck sliding on ice, with nothing pushing it overall. Does it need a push to keep sliding?" };
+      if (s === "visual") return { hintLevel: 2, text: "Look at the arrows on the board: same length, opposite ways. They cancel out. If nothing changes the trolley's motion, does it speed up, slow down, or neither?", visual: "arrows" };
+      if (s === "worked_part") return { hintLevel: 3, text: "The forces cancel, so there's no net force. Your turn: what happens to the speed of something already rolling when nothing changes its motion?" };
+      return null;
+    case "unbalanced-rest":
+      if (s === "simplify") return { hintLevel: 1, text: `One question first: which push is bigger, ${R} N to the right or ${L} N to the left?`, awaiting: "stronger_side", visual: "arrows" };
+      if (s === "analogy") return { hintLevel: 2, text: "Think of a tug-of-war on ice: when one side pulls harder, does the rope stay where it is?" };
+      if (s === "visual") return { hintLevel: 2, text: "Look at the arrows on the board. Tap the stronger push.", awaiting: "stronger_side", visual: "arrows" };
+      if (s === "worked_part") return { hintLevel: 3, text: `The ${big} N push is bigger, so there's a net force towards the ${dir}. Your turn: does the box stay still, or move — and which way?`, visual: "arrows" };
+      return null;
+  }
+}
+
+/** The small questions the strategies ask ("which push is stronger?", "how much stronger?"). */
+function subAnswer(p: SubjectProblem, awaiting: string, r: SubjectReading, cx: RespondContext): SubjectMove | null {
+  const R = n(p, "right"), L = n(p, "left");
+  const dir = bigger(p);
+  const lvl = cx.state.hintLevel;
+  const kind = p.kind as Kind;
+  if (awaiting === "stronger_side") {
+    // A size that is the whole answer isn't a reply to "which is stronger?" — let the full check handle it.
+    const side = r.direction && r.direction !== "none" ? r.direction : r.value === R ? "right" : r.value === L ? "left" : undefined;
+    if (!side || (r.value != null && r.value !== R && r.value !== L)) return null;
+    if (side === dir) {
+      const next = kind === "unbalanced-rest" ? "So does the box stay still, or move — and which way?" : "Now let's find out by how much: how many newtons stronger is it?";
+      return { rule: "P_SUB_RIGHT", action: "ASK", stage: "TRY", reason: "Answered the sub-question (which push is stronger) correctly: confirm it specifically and take the next small step.", text: `Exactly. The ${dir === "right" ? "rightward" : "leftward"} force is stronger — ${Math.max(R, L)} N beats ${Math.min(R, L)} N. ${next}`, hintLevel: lvl, revealAllowed: false, assistive: false, awaiting: kind === "net-force" ? "difference" : undefined };
+    }
+    return { rule: "P_SUB_WRONG_SIDE", action: "HINT", stage: "NOTICE", reason: "Picked the weaker push as the stronger one: point at the arrow lengths, keep the same small question.", text: `Look again at the lengths: the longer arrow is the bigger push, ${Math.max(R, L)} N. Which way does the longer one point?`, hintLevel: Math.max(lvl, 1), revealAllowed: false, assistive: true, help: true, awaiting: "stronger_side", visual: "arrows" };
+  }
+  if (awaiting === "difference" && kind === "net-force") {
+    const v = r.value;
+    if (v == null) return null;
+    const diff = Math.abs(R - L);
+    if (v === diff) {
+      const d = r.direction && r.direction !== dir ? null : dir;
+      if (!d) return null; // wrong direction stated: the full check explains it
+      return { rule: "P_SUB_SOLVED", action: "VERIFY", reason: "Worked out the difference after naming the stronger side: that's the net force. Confirm it with the computed reason, then move on (solved with help).", text: `Yes — ${Math.max(R, L)} N − ${Math.min(R, L)} N = ${diff} N, towards the stronger push. So the net force is ${diff} N to the ${d}. ${cx.next}`, hintLevel: lvl, revealAllowed: true, assistive: false, solved: true, advance: true };
+    }
+    if (v === R + L) return { rule: "P_SUB_ADDED", action: "HINT", stage: "THINK", reason: "Added the forces while working out the difference.", text: `That's both pushes added together. But they pull against each other, so we want the gap between ${Math.max(R, L)} and ${Math.min(R, L)}. What's the gap?`, hintLevel: Math.max(lvl, 2), revealAllowed: false, assistive: true, help: true, attempt: true, awaiting: "difference" };
+    return null;
+  }
+  return null;
+}
+
+/** "Why?" right after a move: the reason for THAT move, in a sentence or two. */
+function whyLast(p: SubjectProblem, last: string): string | null {
+  const t = last.toLowerCase();
+  if (/friction/.test(t)) return "Because on a real floor, friction is a hidden push backwards. Take it away and nothing slows the trolley down.";
+  if (/cancel|balanced|equal|same length|same size|zero/.test(t)) return "Because equal pushes in opposite directions undo each other completely — there's nothing left over to change the motion.";
+  if (/stronger|bigger|longer|tug/.test(t)) return "Because the net force goes the way of the stronger push — it wins the tug-of-war.";
+  if (/opposite|against each other|subtract|take the smaller|difference/.test(t)) return "Because the pushes point opposite ways, so each one undoes part of the other — that's why we take the smaller from the bigger.";
+  if (/match|gap|short|missing/.test(t)) return "Because balanced means both sides push equally hard, so the weaker side needs exactly the difference.";
+  return null;
+}
+
 export const physics: SubjectModule = {
   id: "physics",
   title: "Forces and balance",
@@ -362,7 +443,10 @@ export const physics: SubjectModule = {
   example,
   leaks,
   vocabulary: { concepts: ["balanced", "unbalanced", "zero_net", "motion_needs_force"], outcomes: [...OUTCOMES], topics: TOPICS.map(([t]) => t) },
-  nextIntro: (next) => `Now one to try on your own. ${next.prompt}`,
+  nextIntro: (next) => (next.stage === "transfer" ? `Ready for a challenge? A different twist. ${next.prompt}` : `Now try it yourself — a new problem. ${next.prompt}`),
+  strategy,
+  subAnswer,
+  whyLast,
   checkable: (p) =>
     p.kind === "balanced-moving" || p.kind === "unbalanced-rest"
       ? "For this question I can check whether it stays still, keeps the same speed, speeds up, slows down or starts moving, and which way"

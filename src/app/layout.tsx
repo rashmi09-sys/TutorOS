@@ -1,9 +1,11 @@
 import type { Metadata, Viewport } from "next";
 // Fonts are bundled with the app (no runtime request to a font CDN, so it looks the same offline):
-//  - Inter — one highly legible sans for everything readable. Chosen over Atkinson Hyperlegible because its zero is
-//    plain: a slashed zero reads as "2Ø" to a 12-year-old doing maths.
+//  - Lexend — body text. Designed for reading fluency (wider letter spacing, open shapes), with a plain zero,
+//    which matters for a 12-year-old reading maths.
+//  - Bricolage Grotesque — headings only: a little character so the product doesn't look like every dashboard.
 //  - KaTeX's own serif — reserved for mathematical notation.
-import "@fontsource-variable/inter/wght.css";
+import "@fontsource-variable/lexend/wght.css";
+import "@fontsource-variable/bricolage-grotesque/index.css";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 

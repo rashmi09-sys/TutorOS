@@ -50,7 +50,9 @@ export interface TriangleSpec {
 }
 
 /** A triangle drawn to scale in screen coordinates, with angle arcs and labels. */
-function TriangleSvg({ spec, width = 360, height = 230, onApexDrag, title }: { spec: TriangleSpec; width?: number; height?: number; onApexDrag?: (p: Pt) => void; title: string }) {
+type Corner = "A" | "B" | "C";
+
+function TriangleSvg({ spec, width = 360, height = 230, onApexDrag, title, lit = {}, onTapCorner }: { spec: TriangleSpec; width?: number; height?: number; onApexDrag?: (p: Pt) => void; title: string; lit?: Partial<Record<Corner, boolean>>; onTapCorner?: (k: Corner) => void }) {
   const t = triangle(spec.A, spec.B);
   const pad = 34;
   // A draggable triangle keeps a fixed frame, so the corner stays under the pointer.
@@ -72,11 +74,27 @@ function TriangleSvg({ spec, width = 360, height = 230, onApexDrag, title }: { s
     return { x: (sx - ox) / scale, y: (oy - sy) / scale };
   };
 
-  const corner = (v: Pt, p1: Pt, p2: Pt, label: string, isRight: boolean, key: string) => {
+  const corner = (v: Pt, p1: Pt, p2: Pt, label: string, isRight: boolean, key: Corner) => {
     const unknown = label === "?";
     const lab = bisector(v, p1, p2, r + 17);
+    const tap = onTapCorner
+      ? {
+          role: "button",
+          tabIndex: 0,
+          "aria-pressed": !!lit[key],
+          "aria-label": `${unknown ? "The missing angle" : `The ${label || "90°"} angle`} — tap to highlight`,
+          onClick: () => onTapCorner(key),
+          onKeyDown: (e: React.KeyboardEvent) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onTapCorner(key);
+            }
+          },
+        }
+      : {};
     return (
-      <g key={key}>
+      <g key={key} className={`fig-corner ${lit[key] ? "lit" : ""} ${onTapCorner ? "tappable" : ""}`} {...tap}>
+        {lit[key] && <path d={`M ${v.x} ${v.y} L ${arcPath(v, p1, p2, r + 4).slice(2)} Z`} className="fig-wedge" />}
         {isRight ? (
           (() => {
             const u1 = norm({ x: p1.x - v.x, y: p1.y - v.y });
@@ -152,14 +170,46 @@ function TriangleSvg({ spec, width = 360, height = 230, onApexDrag, title }: { s
   );
 }
 
-/** The problem's triangle: givens labelled, the unknown marked "?" until it's solved. */
-export function TriangleFigure({ data, solved }: { data: Record<string, number | string>; solved?: boolean }) {
+/**
+ * The problem's triangle: givens labelled, the unknown marked "?" until it's solved. Interactive: tap an
+ * angle to light it up. `litKnown` lights the known angles (the tutor's "picture" turn), and `sumStrip`
+ * shows the 180° the three angles share, with the known part filled — no number for the unknown.
+ */
+export function TriangleFigure({ data, solved, interactive, litKnown, sumStrip }: { data: Record<string, number | string>; solved?: boolean; interactive?: boolean; litKnown?: boolean; sumStrip?: boolean }) {
   const A = Number(data.A), B = Number(data.B), C = Number(data.C);
   const unknown = String(data.unknown ?? "C");
-  const show = (k: "A" | "B" | "C", v: number) => (unknown.includes(k) && !solved ? "?" : `${v}°`);
+  const [tapped, setTapped] = useState<Partial<Record<Corner, boolean>>>({});
+  const show = (k: Corner, v: number) => (unknown.includes(k) && !solved ? "?" : `${v}°`);
   const spec: TriangleSpec = { A, B, labels: { A: data.right === "A" ? "" : show("A", A), B: show("B", B), C: show("C", C) }, right: data.right === "A" ? "A" : undefined, equal: data.equal === "AB" };
   const desc = `Triangle with angles ${spec.labels.A || "90° (right angle)"}, ${spec.labels.B} and ${spec.labels.C}`.replace(/\?/g, "unknown");
-  return <TriangleSvg spec={spec} title={desc} />;
+  const known = (["A", "B", "C"] as Corner[]).filter((k) => !unknown.includes(k));
+  const lit: Partial<Record<Corner, boolean>> = { ...tapped };
+  if (litKnown) for (const k of known) lit[k] = true;
+  const knownSum = known.reduce((t, k) => t + (k === "A" ? A : k === "B" ? B : C), 0);
+  return (
+    <>
+      <TriangleSvg spec={spec} title={desc} lit={lit} onTapCorner={interactive ? (k) => setTapped((t) => ({ ...t, [k]: !t[k] })) : undefined} />
+      {sumStrip && !solved && <AngleSumStrip parts={known.map((k) => (k === "A" ? A : k === "B" ? B : C))} known={knownSum} />}
+    </>
+  );
+}
+
+/** 180° as a strip shared by the three angles: the known ones filled in, the rest left as "?". */
+export function AngleSumStrip({ parts, known }: { parts: number[]; known: number }) {
+  let x = 0;
+  return (
+    <div className="sum-strip" role="img" aria-label={`The three angles share 180°. The known angles, ${parts.map((p) => `${p}°`).join(" and ")}, fill part of it; the rest is the missing angle.`}>
+      <div className="sum-bar">
+        {parts.map((p, i) => {
+          const el = <span key={i} className={`sum-part k${i}`} style={{ left: `${(x / 180) * 100}%`, width: `${(p / 180) * 100}%` }}>{p}°</span>;
+          x += p;
+          return el;
+        })}
+        <span className="sum-part rest" style={{ left: `${(known / 180) * 100}%`, width: `${((180 - known) / 180) * 100}%` }}>?</span>
+      </div>
+      <span className="sum-total">180°</span>
+    </div>
+  );
 }
 
 /** Whole-degree angles that always sum to exactly 180 (largest-remainder rounding of the true angles). */
@@ -209,8 +259,12 @@ export interface ForceSpec {
   moving?: number;
 }
 
-/** A box on the floor with force arrows drawn to scale. */
-export function ForceFigure({ spec, title, compact }: { spec: ForceSpec; title?: string; compact?: boolean }) {
+/**
+ * A box on the floor with force arrows drawn to scale. With `onTap`, each push is a button (the tutor asked
+ * "tap the stronger force"). With `showNet`, the net force is drawn under the box and the box drifts that
+ * way — the size of the drift follows the net force (reduced-motion: no drift).
+ */
+export function ForceFigure({ spec, title, compact, onTap, glow, showNet }: { spec: ForceSpec; title?: string; compact?: boolean; onTap?: (dir: "right" | "left") => void; glow?: "right" | "left"; showNet?: boolean }) {
   const W = compact ? 300 : 380, H = compact ? 150 : 180;
   const id = useId();
   const max = Math.max(spec.right, spec.left, 1);
@@ -233,7 +287,15 @@ export function ForceFigure({ spec, title, compact }: { spec: ForceSpec; title?:
         </marker>
       </defs>
       <line x1={16} y1={floor} x2={W - 16} y2={floor} className="fig-floor" />
-      <rect x={lx} y={by} width={boxW} height={boxH} rx={3} className="fig-shape" />
+      <g className="fig-box" style={showNet ? { transform: `translateX(${Math.max(-48, Math.min(48, (spec.right - spec.left) * 3))}px)` } : undefined}>
+        <rect x={lx} y={by} width={boxW} height={boxH} rx={3} className="fig-shape" />
+      </g>
+      {showNet && spec.right !== spec.left && (
+        <g className="fig-net">
+          <line x1={cx} y1={floor + 16} x2={cx + Math.sign(spec.right - spec.left) * len(Math.abs(spec.right - spec.left))} y2={floor + 16} markerEnd={`url(#${id}-hu)`} />
+          <text x={cx + Math.sign(spec.right - spec.left) * (len(Math.abs(spec.right - spec.left)) + 26)} y={floor + 16} dominantBaseline="central" textAnchor="middle" className="fig-label unknown">net</text>
+        </g>
+      )}
       {spec.moving ? (
         <g className="fig-motion">
           <line x1={cx - 22} y1={by - 16} x2={cx + 22} y2={by - 16} markerEnd={`url(#${id}-h)`} />
@@ -241,16 +303,85 @@ export function ForceFigure({ spec, title, compact }: { spec: ForceSpec; title?:
         </g>
       ) : null}
       {/* right push: drawn from the right face outwards → arrow points right */}
-      <line x1={rx} y1={ay} x2={rx + len(spec.right)} y2={ay} className="fig-force" markerEnd={`url(#${id}-h)`} />
-      <text x={rx + len(spec.right) / 2} y={ay - 12} textAnchor="middle" className="fig-label">{spec.right} N</text>
-      <line x1={lx} y1={ay} x2={lx - len(spec.left)} y2={ay} className="fig-force" markerEnd={`url(#${id}-h)`} />
-      <text x={lx - len(spec.left) / 2} y={ay - 12} textAnchor="middle" className="fig-label">{spec.left} N</text>
+      <Push dir="right" x1={rx} x2={rx + len(spec.right)} y={ay} n={spec.right} head={`url(#${id}-h)`} onTap={onTap} glow={glow === "right"} />
+      <Push dir="left" x1={lx} x2={lx - len(spec.left)} y={ay} n={spec.left} head={`url(#${id}-h)`} onTap={onTap} glow={glow === "left"} />
       {spec.missing && (
         <>
           <line x1={rx} y1={ay + 16} x2={rx + missingLen} y2={ay + 16} className="fig-force unknown" markerEnd={`url(#${id}-hu)`} />
           <text x={rx + missingLen + 14} y={ay + 16} dominantBaseline="central" className="fig-label unknown">?</text>
         </>
       )}
+    </svg>
+  );
+}
+
+function Push({ dir, x1, x2, y, n, head, onTap, glow }: { dir: "right" | "left"; x1: number; x2: number; y: number; n: number; head: string; onTap?: (d: "right" | "left") => void; glow?: boolean }) {
+  const lo = Math.min(x1, x2), w = Math.abs(x2 - x1);
+  const tap = onTap
+    ? {
+        role: "button",
+        tabIndex: 0,
+        "aria-label": `The ${n} newton push to the ${dir}`,
+        onClick: () => onTap(dir),
+        onKeyDown: (e: React.KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onTap(dir);
+          }
+        },
+      }
+    : {};
+  return (
+    <g className={`fig-push ${onTap ? "tappable" : ""} ${glow ? "glow" : ""}`} {...tap}>
+      {onTap && <rect x={lo - 6} y={y - 30} width={w + 16} height={46} rx={8} className="fig-hit" />}
+      <line x1={x1} y1={y} x2={x2} y2={y} className="fig-force" markerEnd={head} />
+      <text x={(x1 + x2) / 2} y={y - 12} textAnchor="middle" className="fig-label">{n} N</text>
+    </g>
+  );
+}
+
+/**
+ * A two-pan balance drawn from the current equation a·x + b = c (whole numbers, b ≥ 0): a bags of x and
+ * b blocks on the left, c blocks on the right. `highlight` marks the b blocks on BOTH pans — what the tutor
+ * suggests taking off each side. Nothing here is computed beyond what the equation already says.
+ */
+export function BalanceFigure({ a, b, c, highlight = true }: { a: number; b: number; c: number; highlight?: boolean }) {
+  const id = useId();
+  const W = 420, H = 210;
+  const beamY = 70, cx = W / 2, panW = 170;
+  const lPan = cx - 110, rPan = cx + 110;
+  const blk = 13, gap = 3, perRow = 8;
+  const blocks = (n: number, x0: number, yBase: number, marked: number, key: string) =>
+    Array.from({ length: n }, (_, i) => {
+      const row = Math.floor(i / perRow), col = i % perRow;
+      return <rect key={`${key}${i}`} x={x0 + col * (blk + gap)} y={yBase - (row + 1) * (blk + gap)} width={blk} height={blk} rx={2} className={`bal-block ${i < marked ? "marked" : ""}`} />;
+    });
+  const bagW = 30;
+  const bags = Array.from({ length: a }, (_, i) => (
+    <g key={`bag${i}`} className="bal-bag">
+      <rect x={lPan - panW / 2 + 8 + i * (bagW + 4)} y={beamY + 92 - 34} width={bagW} height={32} rx={9} />
+      <text x={lPan - panW / 2 + 8 + i * (bagW + 4) + bagW / 2} y={beamY + 92 - 16} textAnchor="middle" dominantBaseline="central">x</text>
+    </g>
+  ));
+  const leftBlocksX = lPan - panW / 2 + 8 + a * (bagW + 4) + 4;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="fig balance" role="img" aria-labelledby={`${id}-t`}>
+      <title id={`${id}-t`}>{`A level balance: ${a} bag${a === 1 ? "" : "s"} of x and ${b} block${b === 1 ? "" : "s"} on the left, ${c} blocks on the right.${highlight && b ? ` The ${b} blocks on each side are marked.` : ""}`}</title>
+      <polygon points={`${cx - 16},${H - 14} ${cx + 16},${H - 14} ${cx},${beamY + 6}`} className="bal-stand" />
+      <line x1={lPan} y1={beamY} x2={rPan} y2={beamY} className="bal-beam" />
+      <circle cx={cx} cy={beamY} r={5} className="bal-pivot" />
+      {[lPan, rPan].map((x, i) => (
+        <g key={i}>
+          <line x1={x} y1={beamY} x2={x - panW / 2 + 10} y2={beamY + 92} className="bal-string" />
+          <line x1={x} y1={beamY} x2={x + panW / 2 - 10} y2={beamY + 92} className="bal-string" />
+          <line x1={x - panW / 2} y1={beamY + 92} x2={x + panW / 2} y2={beamY + 92} className="bal-pan" />
+        </g>
+      ))}
+      {bags}
+      {blocks(b, leftBlocksX, beamY + 92, highlight ? b : 0, "l")}
+      {blocks(c, rPan - panW / 2 + 12, beamY + 92, highlight ? b : 0, "r")}
+      <text x={lPan} y={beamY + 112} textAnchor="middle" className="fig-note">{`${a === 1 ? "x" : `${a}x`}${b ? ` + ${b}` : ""}`}</text>
+      <text x={rPan} y={beamY + 112} textAnchor="middle" className="fig-note">{c}</text>
     </svg>
   );
 }
@@ -263,7 +394,7 @@ export function ForceExplorer() {
   const verdict = net === 0 ? "Balanced: the net force is 0 N, so the motion doesn't change — still stays still, moving keeps moving at the same speed." : `Unbalanced: the net force is ${Math.abs(net)} N to the ${net > 0 ? "right" : "left"}, so the motion changes in that direction.`;
   return (
     <div className="explore">
-      <ForceFigure spec={{ right, left }} compact />
+      <ForceFigure spec={{ right, left }} compact showNet />
       <div className="explore-sliders">
         <label>
           <span>Push left</span>

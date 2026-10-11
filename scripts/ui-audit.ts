@@ -1,5 +1,5 @@
 /**
- * Visual audit: renders every student and console screen at 320 / 375 / 768 / 1024 / 1440 px (and 200% zoom),
+ * Visual audit: renders every student screen at 320 / 375 / 768 / 1024 / 1440 px (and 200% zoom),
  * saves screenshots, and reports layout defects found in the real DOM:
  *   - horizontal page overflow
  *   - clipped text (an element whose text overflows its box while overflow is hidden / ellipsised)
@@ -132,7 +132,9 @@ async function say(page: Page, text: string, key = "tutoros.session.v2") {
     // Geometry and physics lessons
     for (const [lesson, lines] of [["geometry", ["105", "I'm stuck", "75"]], ["physics", ["20 N", "4", "to the right"]]] as const) {
       await page.goto(`${BASE}/learn/${lesson}`);
-      await page.getByRole("button", { name: "Read without sound" }).click();
+      const sound = page.getByRole("button", { name: "Sound on" });
+      if (await sound.count()) await sound.click();
+      await page.getByRole("button", { name: "Start Lesson" }).click();
       await page.waitForFunction((k) => !!localStorage.getItem(k), `tutoros.session.${lesson}.v1`);
       for (const t of lines) await say(page, t, `tutoros.session.${lesson}.v1`);
       await page.locator(".sp-explore summary").click();
@@ -144,7 +146,7 @@ async function say(page: Page, text: string, key = "tutoros.session.v2") {
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${OUT}/${width}-0-welcome.png`, fullPage: true });
     total += await defects(page, `${width} welcome`);
-    await page.getByRole("button", { name: "Start the lesson" }).click();
+    await page.getByRole("button", { name: "Start Lesson" }).click();
     await page.waitForFunction(() => !!localStorage.getItem("tutoros.session.v2"));
     await page.waitForTimeout(300);
     for (const t of ["x = 8", "I added the 3 and the 5", "3x = 25", "I'm sure 3x = 25 is right", "I'm stuck"]) await say(page, t);
@@ -182,29 +184,6 @@ async function say(page: Page, text: string, key = "tutoros.session.v2") {
     }
     await page.screenshot({ path: `${OUT}/${width}-5-complete.png`, fullPage: true });
     total += await defects(page, `${width} complete`);
-    // scratch pad (only before completion it shows; reopen a fresh view not needed)
-    // console
-    const c = await ctx.newPage();
-    await c.goto(`${BASE}/console?lesson=algebra`);
-    await c.waitForTimeout(400);
-    await c.screenshot({ path: `${OUT}/${width}-6-overview.png`, fullPage: width < 1024 });
-    total += await defects(c, `${width} overview`);
-    await c.getByRole("tab", { name: "Decision timeline" }).click();
-    await c.locator(".tl-list .tl-item").nth(3).getByRole("button", { name: "Technical details" }).click().catch(() => {});
-    await c.waitForTimeout(200);
-    await c.screenshot({ path: `${OUT}/${width}-6-console.png`, fullPage: width < 1024 });
-    total += await defects(c, `${width} console`);
-    await c.getByRole("tab", { name: "Evaluation lab" }).click();
-    await c.getByRole("button", { name: /Run comparison/ }).click();
-    await c.waitForTimeout(1500);
-    await c.locator(".cell.fail").first().click().catch(() => {});
-    await c.waitForTimeout(200);
-    await c.screenshot({ path: `${OUT}/${width}-7-eval.png`, fullPage: width < 1024 });
-    total += await defects(c, `${width} eval`);
-    await c.getByRole("tab", { name: "Architecture & safety" }).click();
-    await c.waitForTimeout(200);
-    await c.screenshot({ path: `${OUT}/${width}-8-architecture.png`, fullPage: width < 1024 });
-    total += await defects(c, `${width} architecture`);
     await ctx.close();
   }
   // 200% zoom ≈ a 720px-wide viewport at device scale 2
@@ -215,7 +194,7 @@ async function say(page: Page, text: string, key = "tutoros.session.v2") {
   await zp.goto(`${BASE}/learn/algebra`);
   await zp.evaluate(() => localStorage.clear());
   await zp.goto(`${BASE}/learn/algebra`);
-  await zp.getByRole("button", { name: "Start the lesson" }).click();
+  await zp.getByRole("button", { name: "Start Lesson" }).click();
   await zp.waitForFunction(() => !!localStorage.getItem("tutoros.session.v2"));
   await say(zp, "x = 8");
   await say(zp, "I'm stuck");

@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, openMenu, closeMenu, test } from "./fixtures";
+import { expect, openMenu, closeMenu, test, startWithoutSound } from "./fixtures";
 import { mockSpeech, recCount, speechLog, spokenTexts } from "./speech-mock";
 
 /**
@@ -29,9 +29,9 @@ async function fresh(page: Page, opts: Parameters<typeof mockSpeech>[1] = {}) {
 
 test("page load: no speech, no microphone; a clear start screen", async ({ page }) => {
   await fresh(page);
-  await expect(page.getByText("Ready when you are")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Start the lesson" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Read without sound" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ready to figure this out?" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start Lesson" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sound on" })).toHaveAttribute("aria-pressed", "true");
   await page.waitForTimeout(1500);
   expect(await spokenTexts(page)).toEqual([]);
   expect(await recCount(page)).toBe(0);
@@ -41,7 +41,7 @@ test("page load: no speech, no microphone; a clear start screen", async ({ page 
 test("Start the lesson: the introduction is spoken exactly once, with one voice, and nothing follows on its own", async ({ page }) => {
   await page.clock.install();
   await fresh(page);
-  await page.getByRole("button", { name: "Start the lesson" }).click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
   await expect(page.locator(".note.active")).toContainText("3x + 5 = 20");
   await page.clock.runFor(5000); // the whole intro plays
   const spoken = await spokenTexts(page);
@@ -62,7 +62,7 @@ test("Start the lesson: the introduction is spoken exactly once, with one voice,
 
 test("voices that load late are awaited: the first sentence already uses the chosen voice", async ({ page }) => {
   await fresh(page, { voicesDelayMs: 600 });
-  await page.getByRole("button", { name: "Start the lesson" }).click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
   await expect.poll(async () => (await speechLog(page)).filter((e) => e.startsWith("speak:")).length, { timeout: 5000 }).toBeGreaterThan(0);
   const speaks = (await speechLog(page)).filter((e) => e.startsWith("speak:"));
   expect(speaks.every((e) => e.endsWith("|Daniel"))).toBe(true);
@@ -70,7 +70,7 @@ test("voices that load late are awaited: the first sentence already uses the cho
 
 test("Read without sound: nothing is ever spoken, the choice survives a reload, and sound can be turned on in the menu", async ({ page }) => {
   await fresh(page);
-  await page.getByRole("button", { name: "Read without sound" }).click();
+  await startWithoutSound(page);
   await expect(page.locator(".note.active")).toContainText("3x + 5 = 20");
   await page.getByLabel("Your answer or message").fill("x = 8");
   await page.getByLabel("Your answer or message").press("Enter");
@@ -94,14 +94,14 @@ test("Read without sound: nothing is ever spoken, the choice survives a reload, 
 
 test("reload and navigation never restart the introduction", async ({ page }) => {
   await fresh(page);
-  await page.getByRole("button", { name: "Start the lesson" }).click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
   await expect(page.locator(".note.active")).toBeVisible();
   await page.reload();
   await expect(page.getByText("Welcome back")).toBeVisible();
   await page.waitForTimeout(1200);
   expect(await spokenTexts(page)).toEqual([]); // a fresh page after reload: nothing queued
-  await page.goto("/console");
-  await page.getByRole("link", { name: "← Back to the lesson" }).click();
+  await page.goto("/");
+  await page.goBack();
   await expect(page.locator(".note.active")).toBeVisible();
   await page.waitForTimeout(1200);
   expect(await spokenTexts(page)).toEqual([]);
@@ -109,7 +109,7 @@ test("reload and navigation never restart the introduction", async ({ page }) =>
 
 test("Stop speaking stops at once and stays stopped; Replay plays the latest message once", async ({ page }) => {
   await fresh(page, { utterMs: 1500 });
-  await page.getByRole("button", { name: "Start the lesson" }).click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
   await expect(page.getByRole("button", { name: "Stop speaking" })).toBeVisible();
   await page.getByRole("button", { name: "Stop speaking" }).click();
   await expect(page.getByRole("button", { name: "Replay this message" })).toBeVisible();
@@ -128,7 +128,7 @@ test("Stop speaking stops at once and stays stopped; Replay plays the latest mes
 
 test("repeated clicks don't stack audio: many Replays leave one turn playing", async ({ page }) => {
   await fresh(page, { utterMs: 800 });
-  await page.getByRole("button", { name: "Read without sound" }).click();
+  await startWithoutSound(page);
   await expect(page.locator(".note.active")).toBeVisible();
   for (let i = 0; i < 4; i++) {
     const replay = page.getByRole("button", { name: "Replay this message" });
@@ -150,7 +150,7 @@ test("repeated clicks don't stack audio: many Replays leave one turn playing", a
 
 test("the microphone stops the tutor first; Cancel discards; Done sends once; it never reopens by itself", async ({ page }) => {
   await fresh(page, { utterMs: 1500 });
-  await page.getByRole("button", { name: "Start the lesson" }).click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
   await expect(page.locator(".nextline")).toHaveClass(/p-speaking/);
   await page.getByRole("button", { name: "Speak your line" }).click();
   await expect(page.locator(".nextline")).toHaveClass(/p-listening/);

@@ -2,6 +2,7 @@ import { Fraction } from "./fraction";
 import { NUMBER_WORDS, isSolvedForm, normalizeMath, parseAnswer, parseEquation, parseExpression, type Equation } from "./algebra";
 import { interpretDeterministic, type MeaningContext, type StudentMeaning } from "./understand";
 import type { Normal } from "./misconceptions";
+import { readAffect, type AffectKind } from "./affect";
 
 /**
  * Deterministic first-pass understanding of a student utterance.
@@ -31,10 +32,12 @@ export type IntentKind =
   | "EXPLANATION" // "I added 3 and 5"
   | "AMBIGUOUS" // short, not maths, not a known request: ask one clarifying question
   | "OFF_TOPIC"
+  | "AFFECT" // "I hate algebra", "this is boring", "lol" — how they feel, not a maths move or a request
+  | "THINKING" // "let me think", "give me a sec" — an explicit signal to wait
   | "EMPTY";
 
 /** What kind of help the student asked for, in their own words (deterministic phrase rules below). */
-export type HelpRequest = "stuck" | "hint" | "next" | "more_help" | "confused" | "rephrase" | "example" | "slower" | "no_answer" | "why" | "ack";
+export type HelpRequest = "stuck" | "answer" | "hint" | "next" | "more_help" | "confused" | "rephrase" | "example" | "slower" | "no_answer" | "why" | "ack" | "thinking";
 
 export interface PhraseRule {
   id: string;
@@ -95,11 +98,25 @@ export const PHRASE_RULES: PhraseRule[] = [
     examples: ["Give me a hint", "Small hint", "Can I have a clue?", "Just a nudge"],
   },
   {
+    id: "P_THINKING",
+    kind: "THINKING",
+    request: "thinking",
+    re: /^(?!.*\b(why|how come)\b)(ok(ay)?,? |hmm+,? |wait,? |um+,? )?(let me think|give me a (sec|second|minute|moment)|one (sec|second|moment|minute)|hold on|hang on|i'?m (still )?(thinking|working (on )?it)|let me (work|figure) (it|this) out( first)?|thinking)\b/,
+    examples: ["Let me think", "Give me a sec", "Hold on, I'm working on it", "I'm still thinking"],
+  },
+  {
+    id: "P_ANSWER",
+    kind: "HELP_REQUEST",
+    request: "answer",
+    re: /just (tell|give|show) me|(tell|give|show) me (the )?(answer|solution)|what('s| is) the answer|what'?s x\b|whats x\b|what does x (equal|=|come to|work out)|what is x (equal|=)|(tell|give|show) me (what )?x\b|x (equals|is|=) what/,
+    examples: ["Just tell me the answer", "What's x?", "Give me the answer", "What does x equal?"],
+  },
+  {
     id: "P_STUCK",
     kind: "HELP_REQUEST",
     request: "stuck",
-    re: /i'?m stuck|\bstuck\b|i (really )?don'?t know|\bidk\b|no idea|i give up|can'?t do (it|this)|just (tell|give|show) me|(tell|give|show) me (the )?(answer|solution|how)|what('s| is) the answer|how do (i|we) (start|begin|do (this|it|that))|where (do|should|can) (i|we) start|what('s| is) the first (step|thing)|what'?s x\b|whats x\b|what does x (equal|=|come to|work out)|what is x (equal|=)|(tell|give|show) me (what )?x\b|x (equals|is|=) what/,
-    examples: ["I'm stuck", "I don't know", "I give up", "Just tell me the answer", "How do I start?", "What's x?"],
+    re: /i'?m stuck|\bstuck\b|\b(i|still) (really |still )?don'?t know|^don'?t know|\bidk\b|no idea|i give up|can'?t do (it|this)|(tell|give|show) me how|how do (i|we) (start|begin|do (this|it|that))|where (do|should|can) (i|we) start|what('s| is) the first (step|thing)/,
+    examples: ["I'm stuck", "I don't know", "I give up", "How do I start?", "Still don't know"],
   },
   {
     id: "P_MORE_HELP",
@@ -158,6 +175,8 @@ export interface Intent {
   meaning?: StudentMeaning;
   /** The message stops mid-sentence ("I think we…") — probably cut off. */
   incomplete?: boolean;
+  /** How the student said they feel, if they did (see affect.ts). Travels with any intent. */
+  affect?: AffectKind;
 }
 
 export const REPEAT = /^(what\??|huh\??|sorry\??|pardon\??|eh\??)$|repeat|say (that|it) again|didn'?t (hear|catch)|one more time|^(can we |let'?s |please )?go back\b|previous question|what was the question|ask (me )?(that|the question) again/;
@@ -223,6 +242,16 @@ function looksLikeMath(t: string) {
 const phrase = (r: PhraseRule) => ({ kind: r.kind, request: r.request, phraseRule: r.id, recognisedBy: "phrase rule" as const });
 
 export function classifyIntent(text: string, current?: Normal, cx: MeaningContext = {}): Intent {
+  const i = classifyIntentInner(text, current, cx);
+  const affect = readAffect(text);
+  if (!affect) return i;
+  // A feeling on its own ("I hate algebra", "lol") is its own kind of message; with maths, a move or a request in it,
+  // the maths/request is handled and the feeling is acknowledged alongside.
+  if (["AMBIGUOUS", "OFF_TOPIC", "EXPLANATION", "ACKNOWLEDGE"].includes(i.kind)) return { ...i, kind: "AFFECT", affect, recognisedBy: "phrase rule", phraseRule: `AFFECT_${affect}` };
+  return { ...i, affect };
+}
+
+function classifyIntentInner(text: string, current?: Normal, cx: MeaningContext = {}): Intent {
   const t = text
     .trim()
     .toLowerCase()

@@ -35,3 +35,10 @@ export async function readAloudOff(page: import("@playwright/test").Page) {
   if (await r.isEnabled()) await r.uncheck();
   await closeMenu(page);
 }
+
+/** The welcome state: switch "Sound on" to off, then Start Lesson. */
+export async function startWithoutSound(page: import("@playwright/test").Page) {
+  const toggle = page.getByRole("button", { name: "Sound on" });
+  if (await toggle.count()) await toggle.click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
+}

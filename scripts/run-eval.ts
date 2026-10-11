@@ -24,11 +24,11 @@ const arg = (k: string) => {
 const only = arg("only");
 
 function row(label: string, r: SuiteResult | null, note?: string) {
-  if (!r) return `| ${label} | ${note} | | | | | | | | |`;
+  if (!r) return `| ${label} | ${note} | | | | | | | | | | | |`;
   const m = r.metrics;
   const c = m.byCategory;
   const pct = (x: { passed: number; total: number }) => (x.total ? `${x.passed}/${x.total}` : "–");
-  return `| ${label} | ${m.scenarios.passed}/${m.scenarios.total} | ${m.assertions.passed}/${m.assertions.total} | ${m.scenariosWithLeak} | ${m.falseMathStatements} | ${pct(c.diagnosis)} | ${pct(c.appropriateness)} | ${pct(c.recovery)} | ${pct(c.mastery)} | ${m.latencyMs.p50}/${m.latencyMs.p95} ms · ${m.modelCalls} model calls · ${m.costUsd == null ? (m.modelCalls ? "cost unknown (no prices set)" : "no model cost") : `$${m.costUsd.toFixed(4)}`} |`;
+  return `| ${label} | ${m.scenarios.passed}/${m.scenarios.total} | ${m.assertions.passed}/${m.assertions.total} | ${m.scenariosWithLeak} | ${m.falseMathStatements} | ${pct(c.diagnosis)} | ${pct(c.appropriateness)} | ${pct(c.recovery)} | ${pct(c.mastery)} | ${pct(c.context)} | ${pct(c.language)} | ${pct(c.repetition)} | ${m.latencyMs.p50}/${m.latencyMs.p95} ms · ${m.modelCalls} model calls · ${m.costUsd == null ? (m.modelCalls ? "cost unknown (no prices set)" : "no model cost") : `$${m.costUsd.toFixed(4)}`} |`;
 }
 
 (async () => {
@@ -43,8 +43,8 @@ function row(label: string, r: SuiteResult | null, note?: string) {
   if (!only || only === "P") out.P = await runSubjectSuite("physics", det);
 
   console.log(`\nTutorOS eval — ${new Date().toISOString()}\n`);
-  console.log("| Policy | Scenarios | Assertions | Scenarios with answer leak | False maths stated | Diagnosis | Appropriateness | Recovery | Mastery | Latency · cost |");
-  console.log("|---|---|---|---|---|---|---|---|---|---|");
+  console.log("| Policy | Scenarios | Assertions | Scenarios with answer leak | False maths stated | Diagnosis | Appropriateness | Recovery | Mastery | Context | Language | Repetition | Latency · cost |");
+  console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   if ("A" in out) console.log(row("A · baseline answer-giver", out.A));
   if ("B" in out) console.log(row("B · tutor-v1 deterministic", out.B));
   if ("C" in out) console.log(row(`C · tutor-v1 + LLM`, out.C, out.C ? undefined : `not run — no provider configured (${JSON.stringify(providerInfo())})`));

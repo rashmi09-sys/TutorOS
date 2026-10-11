@@ -80,7 +80,7 @@ export function thinkVariants(ctx: PolicyContext): string[] {
   const out: string[] = [];
   if (!n.A.eq(1)) {
     out.push(
-      `Think of getting dressed: x was multiplied by ${n.A} first, then ${b} was ${plus ? "added on" : "taken off"}. To undo, you go backwards — like taking off your shoes before your socks. Which comes off first?`,
+      `Think of getting dressed: x was multiplied by ${n.A} first, then ${b} was ${plus ? "added on" : "taken off"}. Undoing goes backwards — shoes come off before socks. Which comes off first?`,
     );
   }
   out.push(

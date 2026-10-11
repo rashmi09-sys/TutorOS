@@ -1,9 +1,9 @@
 /** Human-readable rule table for the console. tests/rules.test.ts asserts every rule the policy can emit is documented here. */
 export const RULES: { id: string; when: string; does: string; why: string }[] = [
   { id: "R0_PRESENT_PROBLEM", when: "Session start", does: "ASK for the first move", why: "Start with the student's thinking, not the method." },
-  { id: "R1_GUIDED_SOLVED", when: "Guided problem solved", does: "VERIFY on a fresh problem", why: "One success isn't mastery." },
-  { id: "R1_TRANSFER_SOLVED_INDEPENDENT", when: "Fresh problem solved, no help", does: "VERIFY: record evidence, next item", why: "Independent transfer is the evidence that counts." },
-  { id: "R1_TRANSFER_SOLVED_ASSISTED", when: "Fresh problem solved with help", does: "VERIFY: practice, not evidence", why: "Scaffolded success ≠ independent skill." },
+  { id: "R1_GUIDED_SOLVED", when: "Guided problem solved", does: "ASSESS: give 4x + 3 = 19 to do alone", why: "One success isn't mastery." },
+  { id: "R1_TRANSFER_SOLVED_INDEPENDENT", when: "Fresh problem solved, no help", does: "ASSESS: record evidence, next item (a new twist)", why: "Independent transfer is the evidence that counts." },
+  { id: "R1_TRANSFER_SOLVED_ASSISTED", when: "Fresh problem solved with help", does: "ASSESS: practice, not evidence", why: "Scaffolded success ≠ independent skill." },
   { id: "R2_VALID_STEP", when: "Correct, simpler equation", does: "ASK for the next move, naming what they did", why: "Specific praise makes the move repeatable." },
   { id: "R3_VALID_NO_PROGRESS", when: "True but not simpler", does: "ASK how to isolate x", why: "Distinguish correct from useful." },
   { id: "R4_RESPECTFUL_CHALLENGE", when: "Student insists on a wrong step", does: "VERIFY with a computed check", why: "Let the maths decide; don't overrule." },
@@ -54,5 +54,9 @@ export const RULES: { id: string; when: string; does: string; why: string }[] = 
   { id: "R37_PART_RIGHT", when: "Pointing at the constant (\"the 5 first\", \"the addition\")", does: "Confirm; ask which operation undoes it", why: "Answers the tutor's own question in context." },
   { id: "R38_PART_COEFFICIENT_FIRST", when: "\"Multiplication\" in reply to \"which would you undo first?\"", does: "Allowed but makes fractions; the constant was done last; ask what undoes it", why: "Explain, don't overrule." },
   { id: "R39_OP_REPEATED_NAME_MOVE", when: "The same unhelpful proposal a third time", does: "Name the needed move directly (rung 2), not the result", why: "Re-explaining a third time doesn't help; escalate." },
+  { id: "R7d_SAME_MISTAKE_VISUAL", when: "The same wrong line again after a question and a computed check", does: "VISUALIZE: the balance on the whiteboard, and ask whether their line matches it", why: "The same explanation twice doesn't help; change modality." },
+  { id: "R9 · confusion ladder", when: "\"I don't know\" again and again on one problem", does: "1 simplify (ASK one choice) → 2 RETEACH with an analogy → 3 VISUALIZE the balance → 4 EXPLAIN the first move, the student takes the next → 5 worked solution, then a fresh problem", why: "Each time a different approach, tracked in the teaching memory — never the same explanation again." },
+  { id: "R10b_WAIT_ON_REQUEST", when: "\"Let me think\", \"give me a sec\"", does: "WAIT: one short line, no question, no help buttons", why: "An explicit signal to wait — not inferred from elapsed time." },
+  { id: "R40_ENCOURAGE_*", when: "\"I hate algebra\", \"this is boring\", \"lol\" (worry and frustration go to the help ladder with an acknowledgement)", does: "ENCOURAGE: acknowledge in a line — humour only about the subject, never the child — then the same question back", why: "Feelings aren't off-topic, and they aren't a request for the answer either." },
   { id: "R18 via bare \"why?\"", when: "\"Why?\" right after the tutor named or used a move", does: "EXPLAIN the idea behind that move", why: "A bare why is about the last move — resolved from what the tutor said." },
 ];

@@ -1,8 +1,8 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, test, startWithoutSound } from "./fixtures";
 
 /**
- * Navigation and progress persistence across the home page, the three lessons and the Engineer View:
+ * Navigation and progress persistence across the home page and the three lessons:
  * the "All lessons" button, the logo, browser back/forward, Continue learning, reload, and Start again.
  */
 
@@ -31,13 +31,13 @@ async function say(page: Page, text: string) {
 async function startFromHome(page: Page, title: string, path: string) {
   await card(page, title).getByRole("link", { name: `Start lesson: ${title}` }).click();
   await expect(page).toHaveURL(new RegExp(`${path}$`));
-  await page.getByRole("button", { name: "Read without sound" }).click();
+  await startWithoutSound(page);
   await expect(page.locator(".note.active")).toBeVisible();
 }
 
 const allLessons = (page: Page) => page.locator(".rail").getByRole("link", { name: "All lessons" });
 
-test("full journey: algebra → wrong answer → hint → home → resume → complete → Engineer View trace → evaluation → home", async ({ page, context }) => {
+test("full journey: algebra → wrong answer → hint → home → resume → complete → home", async ({ page }) => {
   await fresh(page);
   await startFromHome(page, "Two-step equations", "/learn/algebra");
   await expect(allLessons(page)).toBeVisible();
@@ -67,31 +67,11 @@ test("full journey: algebra → wrong answer → hint → home → resume → co
   await expect(page.locator(".result")).toBeVisible();
   expect((await stateOf(page, "algebra")).phase).toBe("COMPLETE");
 
-  // Engineer View: inspect why the tutor answered "x = 8" the way it did.
-  const [ev] = await Promise.all([context.waitForEvent("page"), page.getByRole("link", { name: "Engineer view ↗" }).click()]);
-  await ev.waitForLoadState();
-  await expect(ev).toHaveURL(/\/console\?lesson=algebra$/);
-  await expect(ev.locator(".ov-stop.done")).toHaveCount(3);
-  await ev.getByRole("tab", { name: "Decision timeline" }).click();
-  const turn = ev.locator(".tl-list .tl-item", { hasText: "x = 8" }).first();
-  await expect(turn.locator(".tl-check")).toContainText("Not equivalent");
-  await expect(turn).toContainText("Decided");
-  await turn.getByRole("button", { name: "Technical details" }).click();
-  await expect(turn.locator(".cand.chosen")).toBeVisible();
-  await expect(turn.getByText("No model calls this turn — deterministic.")).toBeVisible();
-  // Overview → "Open in the timeline" lands on that turn with its trace open.
-  await ev.getByRole("tab", { name: "Overview" }).click();
-  await ev.locator(".ov-recent .tl-item").first().getByRole("button", { name: "Open in the timeline" }).click();
-  await expect(ev.locator(".tl-list .tl-details").first()).toBeVisible();
-  await ev.getByRole("tab", { name: "Evaluation lab" }).click();
-  await ev.getByRole("button", { name: "Run comparison" }).click();
-  await expect(ev.locator(".suite", { hasText: "Tutor, deterministic" })).toContainText("50");
-  await ev.locator(".mx-algebra .cell.fail").first().click();
-  await expect(ev.locator(".inspector .asr.fail").first()).toBeVisible();
-  await ev.locator(".ev-nav").getByRole("link", { name: "All lessons" }).click();
-  await expect(ev).toHaveURL(/\/$/);
-  await expect(card(ev, "Two-step equations").getByText(/^Finished/)).toBeVisible();
-  await expect(card(ev, "Two-step equations").getByRole("link", { name: "Review" })).toBeVisible();
+  // Home: the card says it's finished, and offers Review.
+  await allLessons(page).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(card(page, "Two-step equations").getByText(/^Finished/)).toBeVisible();
+  await expect(card(page, "Two-step equations").getByRole("link", { name: "Review" })).toBeVisible();
 });
 
 test("browser back and forward between home and a lesson keep progress", async ({ page }) => {
@@ -119,7 +99,7 @@ for (const [title, path, answer] of [
     // The button is there on the start screen too.
     await card(page, title).getByRole("link", { name: `Start lesson: ${title}` }).click();
     await expect(allLessons(page)).toBeVisible();
-    await page.getByRole("button", { name: "Read without sound" }).click();
+    await startWithoutSound(page);
     await expect(page.locator(".note.active")).toBeVisible();
     await say(page, answer);
     await page.locator(".rail").getByRole("link", { name: "TutorOS home" }).click();
@@ -146,7 +126,7 @@ test("progress is kept per lesson, and Start again resets only that lesson", asy
   await expect(card(page, "Two-step equations").getByRole("link", { name: "Start lesson: Two-step equations" })).toBeVisible();
   await card(page, "Forces and balance").getByRole("button", { name: "Start again" }).click();
   await expect(page).toHaveURL(/\/learn\/physics$/);
-  await expect(page.getByRole("button", { name: "Start the lesson" })).toBeVisible(); // a clean start
+  await expect(page.getByRole("button", { name: "Start Lesson" })).toBeVisible(); // a clean start
   expect(await stateOf(page, "physics")).toBeNull();
   expect((await stateOf(page, "geometry")).turn).toBe(2); // untouched
 });

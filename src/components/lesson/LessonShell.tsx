@@ -58,13 +58,13 @@ export interface Stop {
  */
 export interface LessonAdapter<S extends LessonStateBase> {
   info: LessonInfo;
-  welcomeTitle: string;
   welcomePreview: ReactNode;
   workTitle: string;
   /** Offer the freehand scratch pad over the working panel. */
   scratch?: boolean;
   stops: (s: S) => Stop[];
-  WorkPanel: (p: { state: S; hoverTurn: number | null; onRestart: () => void }) => ReactNode;
+  /** `onSay` sends words from the whiteboard (a tapped arrow, a chosen move) exactly as if the student typed them. */
+  WorkPanel: (p: { state: S; hoverTurn: number | null; onRestart: () => void; onSay: (text: string) => void; busy: boolean }) => ReactNode;
   helpOptions: (s: S) => HelpOption[];
   dividers?: (s: S) => Map<number, string>;
   Profile: (p: { state: S }) => ReactNode;
@@ -97,7 +97,7 @@ export function LessonShell<S extends LessonStateBase>({ adapter }: { adapter: L
   const paceRef = useRef<"normal" | "slow">("normal");
   const { ref: speakerRef, supported: ttsSupported, state: speechState } = useSpeaker();
   const speaking = speechState.status === "speaking" || speechState.status === "preparing";
-  const submitRef = useRef<(text: string, via: "keyboard" | "voice", extra?: { voice?: VoiceMeta; source?: "typed" | "help-option" }) => void>(() => {});
+  const submitRef = useRef<(text: string, via: "keyboard" | "voice", extra?: { voice?: VoiceMeta; source?: "typed" | "help-option" | "board" }) => void>(() => {});
 
   const voice = useVoiceInput({
     onComplete: (text, meta) => submitRef.current(text, "voice", { voice: meta }),
@@ -184,7 +184,7 @@ export function LessonShell<S extends LessonStateBase>({ adapter }: { adapter: L
     play(`${state.sessionId}-t${lastTutor.turn}`, lastTutor.text, lastTutor.turn, true);
   };
 
-  const submit = async (text: string, via: "keyboard" | "voice", extra: { voice?: VoiceMeta; source?: "typed" | "help-option" } = {}) => {
+  const submit = async (text: string, via: "keyboard" | "voice", extra: { voice?: VoiceMeta; source?: "typed" | "help-option" | "board" } = {}) => {
     const t = text.trim();
     if (!t || busyRef.current) return;
     busyRef.current = true; // no duplicate submission before React re-renders
@@ -193,7 +193,7 @@ export function LessonShell<S extends LessonStateBase>({ adapter }: { adapter: L
     setInput(t); // stays pencilled-in (input disabled) while the line is checked
     const ok = await send({ type: "text", text: t, via, interruptedTutor: interrupted.current || undefined, ...(extra.voice ? { voice: extra.voice } : {}), ...(extra.source ? { source: extra.source } : {}) });
     interrupted.current = false;
-    if (ok) setInput(extra.source === "help-option" ? draft : "");
+    if (ok) setInput(extra.source === "help-option" || extra.source === "board" ? draft : "");
     else if (via === "voice") setInput(t); // a failed or cancelled spoken line stays visible to edit or resend
   };
   useEffect(() => {
@@ -206,9 +206,17 @@ export function LessonShell<S extends LessonStateBase>({ adapter }: { adapter: L
     void voice.start({ resume: o?.resume, pauseMs: null });
   };
 
+  const [attention, setAttention] = useState(false);
+  /** Start Lesson: the first (and only) click that may produce sound. Sound follows the student's choice. */
   const startLesson = (withSound: boolean) => {
     setSound(withSound && ttsSupported !== false);
-    void send({ type: "start" });
+    void send({ type: "start" }).then((ok) => {
+      if (!ok) return;
+      // Draw the eye to the whiteboard for a moment: that's where the problem is.
+      setAttention(true);
+      setTimeout(() => setAttention(false), 2400);
+      requestAnimationFrame(() => document.querySelector(".work-panel")?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+    });
   };
 
   const presence: Presence =
@@ -232,6 +240,8 @@ export function LessonShell<S extends LessonStateBase>({ adapter }: { adapter: L
   const statusMessage =
     presence === "processing" && pendingStudent
       ? `Checking “${pendingStudent}”…`
+      : presence === "speaking" && speechState.status === "preparing"
+        ? "Getting the tutor's voice ready… You can start typing — sending stops it."
       : presence === "interrupted" || presence === "voice-error" || presence === "finishing"
         ? (voice.snap.message ?? null)
         : presence === "waiting" && (voiceStatus === "cancelled" || voiceStatus === "idle") && voice.snap.message
@@ -243,30 +253,30 @@ export function LessonShell<S extends LessonStateBase>({ adapter }: { adapter: L
       <div className="app">
         <TopBar info={adapter.info} stops={null} teacher={teacher} />
         <main className="welcome">
-          <p className="welcome-kicker">Ready when you are</p>
-          <h1>{adapter.welcomeTitle}</h1>
-          <p>{adapter.info.intro} Talk or type, whichever you like.</p>
+          <p className="welcome-kicker">{adapter.info.subject} · {adapter.info.title}</p>
+          <h1>Ready to figure this out?</h1>
+          <p className="welcome-lead">We&apos;ll work through one problem together. Then you&apos;ll get a chance to try it yourself.</p>
           <div className="welcome-preview" aria-hidden>
             {adapter.welcomePreview}
           </div>
           <div className="welcome-actions">
-            <button className="btn primary big" onClick={() => startLesson(true)} disabled={busy}>
-              {busy ? "Opening the lesson…" : "Start the lesson"}
+            <button className="btn primary big" onClick={() => startLesson(ttsOn)} disabled={busy}>
+              {busy ? "Opening the lesson…" : "Start Lesson"}
             </button>
-            <button className="btn big quiet" onClick={() => startLesson(false)} disabled={busy}>
-              Read without sound
+            <button
+              className={`btn big quiet sound-toggle ${ttsOn && ttsSupported !== false ? "on" : "off"}`}
+              aria-pressed={ttsOn && ttsSupported !== false}
+              onClick={() => setSound(!ttsOn)}
+              disabled={busy || ttsSupported === false}
+            >
+              <SoundIcon on={ttsOn && ttsSupported !== false} />
+              {ttsSupported === false ? "Sound unavailable" : ttsOn ? "Sound on" : "Sound off"}
             </button>
           </div>
-          <p className="welcome-sound">
-            {ttsSupported === false
-              ? "This browser can't read aloud, so the lesson is text only."
-              : "The tutor reads its replies aloud once you start. The microphone stays off until you tap it. You can switch sound off or on at any time in the menu."}
-          </p>
-          <Capability teacher={teacher} />
-          {error && <p className="error">{error}</p>}
           <p className="welcome-fine">
-            No sign-up and no name. Your work stays in this browser. <Link href="/">All lessons</Link>
+            {ttsSupported === false ? "This browser can't read aloud, so the lesson is text only. " : "Nothing plays until you press Start. "}The microphone stays off until you tap it. No sign-up — your work stays in this browser. <Link href="/">All lessons</Link>
           </p>
+          {error && <p className="error">{error}</p>}
         </main>
       </div>
     );
@@ -317,7 +327,7 @@ export function LessonShell<S extends LessonStateBase>({ adapter }: { adapter: L
         }}
       />
       <main className="workspace">
-        <section className={`work-panel ${scratch ? "scratching" : ""}`} aria-label="Your working">
+        <section className={`work-panel ${scratch ? "scratching" : ""} ${attention ? "attention" : ""}`} aria-label="Your working">
           <header className="panel-head">
             <h2>{adapter.workTitle}</h2>
             {adapter.scratch && (
@@ -328,7 +338,7 @@ export function LessonShell<S extends LessonStateBase>({ adapter }: { adapter: L
             )}
           </header>
           {adapter.scratch && <ScratchCanvas active={scratch} tool="pen" clearSignal={scratchClear} />}
-          <WorkPanel state={state} hoverTurn={hoverTurn} onRestart={restart} />
+          <WorkPanel state={state} hoverTurn={hoverTurn} onRestart={restart} busy={busy} onSay={(text) => submit(text, "keyboard", { source: "board" })} />
         </section>
         <section className="tutor-panel" aria-label="Your tutor">
           <header className="panel-head tutor-head">
@@ -391,8 +401,8 @@ export function Capability({ teacher }: { teacher: TeacherInfo | null }) {
   return (
     <p className="welcome-capability">
       {teacher.mode === "llm"
-        ? "A language model helps me read what you say. Every answer is still checked by exact rules, not by the model."
-        : "No language model is connected right now, so I understand numbers, maths and a set list of everyday phrases. If I don't follow something, I'll tell you what I can check."}
+        ? "I can follow everyday wording, and every answer you give is checked exactly."
+        : "I'm in basic mode right now: I understand numbers, maths and common phrases like “I'm stuck” or “why?”. If I don't follow you, I'll say so and tell you what I can check."}
     </p>
   );
 }
@@ -435,9 +445,6 @@ function TopBar({ info, stops, teacher, menu }: { info: LessonInfo; stops: Stop[
         </ol>
       )}
       <div className="rail-actions">
-        <Link className="rail-link" href={`/console?lesson=${info.id}`} target="_blank" aria-label="Engineer view ↗">
-          Engineer view <span aria-hidden>↗</span>
-        </Link>
         {stops && menu && <Menu teacher={teacher} {...menu} />}
       </div>
     </header>
@@ -492,7 +499,6 @@ function Menu({ teacher, onRestart, onDrawer, readAloud }: MenuProps & { teacher
           </label>
           {teacher && (
             <>
-              <div className="menu-sep" role="presentation" />
               <p className="menu-fine">{teacher.mode === "deterministic" ? "Running without a language model: I understand maths, numbers and a set list of phrases. Every answer is checked exactly." : `Language model: ${teacher.name}. It helps read your words; every answer is still checked exactly.`}</p>
             </>
           )}
@@ -536,5 +542,14 @@ function TranscriptDrawer({ messages, onClose }: { messages: Message[]; onClose:
         ))}
       </ol>
     </Drawer>
+  );
+}
+
+function SoundIcon({ on }: { on: boolean }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 5 6 9H3v6h3l5 4z" />
+      {on ? <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" /> : <path d="m16 9 5 6m0-6-5 6" />}
+    </svg>
   );
 }

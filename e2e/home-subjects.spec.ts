@@ -1,10 +1,9 @@
 import type { Page } from "@playwright/test";
-import { expect, readAloudOff, test } from "./fixtures";
+import { expect, openMenu, readAloudOff, test, startWithoutSound } from "./fixtures";
 import { mockSpeech } from "./speech-mock";
 
 /**
- * The home screen, the geometry and physics lessons in a real browser against the real server, and their
- * Engineer View traces. Answers to random check problems are read from the signed state the page holds,
+ * The home screen and the geometry and physics lessons in a real browser against the real server. Answers to random check problems are read from the signed state the page holds,
  * exactly as a student who knows the answer would type them.
  */
 
@@ -23,7 +22,7 @@ async function open(page: Page, lesson: string) {
   await page.goto(`/learn/${lesson}`);
   await page.evaluate(() => localStorage.clear());
   await page.goto(`/learn/${lesson}`);
-  await page.getByRole("button", { name: "Read without sound" }).click();
+  await startWithoutSound(page);
   await expect(page.locator(".note.active")).toBeVisible();
 }
 
@@ -34,10 +33,10 @@ test("home: three lessons, honest capability note, and Continue after leaving a 
   await expect(page.getByRole("heading", { name: "What would you like to work on?" })).toBeVisible();
   await expect(page.locator(".lesson-card")).toHaveCount(3);
   for (const t of ["Two-step equations", "Forces and balance", "Angles in a triangle"]) await expect(page.getByRole("heading", { name: t })).toBeVisible();
-  await expect(page.getByText(/No language model is connected right now/)).toBeVisible();
+  await expect(page.getByText(/I.m in basic mode right now/)).toBeVisible();
   await page.getByRole("link", { name: "Start lesson: Angles in a triangle" }).click();
   await expect(page).toHaveURL(/\/learn\/geometry$/);
-  await page.getByRole("button", { name: "Read without sound" }).click();
+  await startWithoutSound(page);
   await expect(page.locator(".note.active")).toBeVisible();
   await say(page, "105");
   await page.locator(".rail").getByRole("link", { name: "All lessons" }).click();
@@ -50,11 +49,13 @@ test("home: three lessons, honest capability note, and Continue after leaving a 
 test("geometry: misconception, help ladder, correct answer, next question, explorer", async ({ page }) => {
   await open(page, "geometry");
   await expect(page.locator(".sp-prompt")).toContainText("65° and 40°");
-  await expect(await say(page, "I'm stuck")).toContainText("What do the three angles");
+  // Stuck: a smaller question first ("what do the two known angles add up to?").
+  await expect(await say(page, "I'm stuck")).toContainText("What do those two add up to");
   await expect(page.locator(".note.active .note-kind")).toContainText("Notice");
-  await expect(await say(page, "105")).toContainText("add up to");
+  // 105 would be a mistake as a final answer, but here it answers the tutor's smaller question.
+  await expect(await say(page, "105")).toContainText("used up");
   const st0 = await stateOf(page, "geometry");
-  expect(st0.attempts).toBe(1);
+  expect(st0.attempts).toBe(0);
   // The answer never appears before it is earned.
   for (const m of await page.locator(".msg.tutor").allTextContents()) expect(m).not.toMatch(/\b75\b/);
   await expect(await say(page, "180 - 65 - 40 = 75")).toContainText("Yes — 75°");
@@ -95,33 +96,29 @@ test("physics: added forces, size without direction, spoken answer, closed outco
   if (p2.kind === "balanced-moving") {
     await expect(await say(page, "it turns into a rocket")).toContainText("I can check");
     await expect(await say(page, "it slows down")).toContainText("friction");
-  } else {
+  } else if (p2.kind === "unbalanced-rest") {
     await expect(await say(page, "it stays still")).toContainText("aren't equal");
+  } else {
+    // balance-missing (the transfer question can be any of three kinds): giving one of the forces.
+    await expect(await say(page, `${p2.data.left} N`)).toContainText("one of the forces");
   }
   for (const m of await page.locator(".msg.tutor").allTextContents()) expect(m).not.toMatch(/keeps rolling at 2 m\/s|starts? (to )?mov\w* (to the )?(left|right)/);
 });
 
-test("Engineer View shows a geometry session: understood, checked, decided", async ({ page, context }) => {
+test("the engineering console is gone: no links to it, and its routes are not served", async ({ page, request }) => {
+  await page.goto("/");
+  await expect(page.getByText(/Engineer view/i)).toHaveCount(0);
   await open(page, "geometry");
-  await say(page, "105");
-  const c = await context.newPage();
-  await c.goto("/console?lesson=geometry");
-  await expect(c.locator(".ov-lesson h1")).toHaveText("Angles in a triangle");
-  await expect(c.getByText("Angle-sum rule (180°) computed exactly").first()).toBeVisible();
-  await c.getByRole("tab", { name: "Decision timeline" }).click();
-  const card = c.locator(".tl-list .tl-item", { hasText: "105" });
-  await expect(card).toContainText("An answer: 105°");
-  await expect(card.locator(".tl-check")).toContainText("Not correct");
-  await expect(card.locator(".tl-check")).toContainText("added the known angles");
-  await card.getByRole("button", { name: "Technical details" }).click();
-  await expect(card.locator(".stage").filter({ has: c.locator(".stage-k", { hasText: /^Subject check$/ }) })).toContainText("incorrect");
-  await expect(card.getByText("No model calls this turn — deterministic.")).toBeVisible();
+  await openMenu(page);
+  await expect(page.getByRole("group", { name: "Lesson menu" }).getByText(/Engineer/i)).toHaveCount(0);
+  for (const path of ["/console", "/console?lesson=algebra"]) expect((await request.get(path)).status(), path).toBe(404);
+  expect((await request.post("/api/eval", { data: { suites: ["B"] } })).status()).toBe(404);
 });
 
 test("phone width: home and lessons don't scroll sideways", async ({ browser }) => {
   const ctx = await browser.newContext({ viewport: { width: 360, height: 760 } });
   const page = await ctx.newPage();
-  for (const path of ["/", "/learn/geometry", "/learn/physics", "/console"]) {
+  for (const path of ["/", "/learn/algebra", "/learn/geometry", "/learn/physics"]) {
     await page.goto(path);
     await page.waitForTimeout(200);
     const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

@@ -49,6 +49,8 @@ export function mulberry32(seed: number) {
 }
 
 export const GUIDED_PROBLEM = makeProblem(3, 5, 20, "ax+b=c", "guided", "p0");
+/** The first independent check after the guided problem. */
+export const FIRST_TRANSFER = makeProblem(4, 3, 19, "ax+b=c", "transfer", "t1");
 
 /** Generate a fresh transfer problem that avoids previously seen numbers. */
 export function generateTransferProblem(seed: number, index: number, seen: Problem[]): Problem {

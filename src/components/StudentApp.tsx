@@ -1,9 +1,11 @@
 "use client";
 
+import { stageLabel, stageSub } from "@/lib/stages";
 import Link from "next/link";
 import { helpOptions } from "@/lib/helpOptions";
 import { lessonInfo } from "@/lib/lessons";
 import { MISCONCEPTIONS } from "@/engine/misconceptions";
+import { learningMessage, problemEvidence } from "@/lib/evidence";
 import type { SessionState } from "@/engine/types";
 import { LessonShell, type LessonAdapter, type Stop } from "./lesson/LessonShell";
 import { Notebook } from "./student/Notebook";
@@ -19,15 +21,14 @@ export function StudentApp() {
 
 const algebra: LessonAdapter<SessionState> = {
   info: lessonInfo("algebra"),
-  welcomeTitle: "Let's work through an equation together.",
   welcomePreview: <MathLine raw="3x + 5 = 20" latex="3x + 5 = 20" size="lg" focus={["constant", "other-side"]} />,
   workTitle: "Your working",
   scratch: true,
   stops: (state) => {
     const base = [
-      { label: "Solve together", sub: "with hints" },
-      { label: "Check 1", sub: "on your own" },
-      { label: "Check 2", sub: "on your own" },
+      { label: stageLabel(0), sub: stageSub(0) },
+      { label: stageLabel(1), sub: stageSub(1) },
+      { label: stageLabel(2), sub: stageSub(2) },
     ];
     const stops: Stop[] = base.map((s, i) => {
       const p = state.problems[i];
@@ -41,14 +42,14 @@ const algebra: LessonAdapter<SessionState> = {
     if (state.current > 2) stops.push({ label: "Extra check", sub: "on your own", done: false, now: true });
     return stops;
   },
-  WorkPanel: ({ state, hoverTurn, onRestart }) => <Notebook state={state} hoverTurn={hoverTurn} footer={state.phase === "COMPLETE" ? <Result state={state} onRestart={onRestart} /> : null} />,
+  WorkPanel: ({ state, hoverTurn, onRestart, onSay, busy }) => <Notebook state={state} hoverTurn={hoverTurn} onSay={onSay} busy={busy} footer={state.phase === "COMPLETE" ? <Result state={state} onRestart={onRestart} /> : null} />,
   helpOptions,
   dividers: (state) => {
     const d = new Map<number, string>();
     state.problems.forEach((p, i) => {
       if (i === 0) return;
       const given = state.board.find((b) => b.problemId === p.id && b.kind === "problem");
-      if (given?.turn != null) d.set(given.turn, `Check ${i} · ${p.text}`);
+      if (given?.turn != null) d.set(given.turn, `${stageLabel(i)} · ${p.text}`);
     });
     return d;
   },
@@ -61,13 +62,14 @@ function Result({ state, onRestart }: { state: SessionState; onRestart: () => vo
   const m = state.mastery;
   const alone = m.observations.filter((o) => o.kind === "transfer" && o.correct).length;
   const tries = m.observations.filter((o) => o.kind === "transfer").length;
-  const verdict = m.status === "mastered" ? "You solved fresh problems on your own — two in a row." : m.status === "insufficient_evidence" ? "Not enough tries on your own yet to tell. We'll do more next time." : "Getting there. A little more practice on your own will lock it in.";
+  const msg = learningMessage(problemEvidence(state));
   return (
     <section className="result" role="status" aria-label="Understanding check">
       <p className="result-kicker">Understanding check</p>
-      <h2>{m.status === "mastered" ? "Got it." : m.status === "insufficient_evidence" ? "Not sure yet." : "Nearly there."}</h2>
-      <p className="result-verdict">{verdict}</p>
+      <h2>{msg.heading}</h2>
+      <p className="result-verdict">{msg.text}</p>
       <p className="result-evidence">Fresh problems on your own: {alone} of {tries} solved without help. Problems finished with help don&apos;t count towards this.</p>
+      <Evidence state={state} />
       <div className="result-moves">
         <span>The two moves:</span>
         <span className="move">undo the number added or taken away</span>
@@ -79,6 +81,43 @@ function Result({ state, onRestart }: { state: SessionState; onRestart: () => vo
         <Link className="btn quiet" href="/">Choose another lesson</Link>
       </div>
     </section>
+  );
+}
+
+/** What happened on each problem, from the session record — observable, not a claim about long-term learning. */
+function Evidence({ state }: { state: SessionState }) {
+  const rows = problemEvidence(state);
+  return (
+    <div className="evidence">
+      <h3>What I saw</h3>
+      <table className="evidence-table">
+        <thead>
+          <tr>
+            <th scope="col">Problem</th>
+            <th scope="col">Your lines</th>
+            <th scope="col">Lines to fix</th>
+            <th scope="col">Hints</th>
+            <th scope="col">First try</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.problemId}>
+              <th scope="row">
+                <span className="ev-eq">{r.text}</span>
+                <small>{r.stage === "guided" ? "solved together" : `${r.stage === "independent" ? "new numbers" : "new twist"} · ${r.independent ? "on your own" : "with help"}`}</small>
+              </th>
+              <td className="ev-steps">{r.steps.length ? r.steps.join("  →  ") : "—"}</td>
+              <td>{r.wrongLines}</td>
+              <td>{r.hints}</td>
+              <td>{r.firstTry ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.some((r) => r.repeatedMistake) && <p className="evidence-note">The same mix-up came up more than once: {Array.from(new Set(rows.filter((r) => r.repeatedMistake).flatMap((r) => r.noticed))).join("; ").toLowerCase()}.</p>}
+      <p className="evidence-note">This is what happened in this lesson. It shows you can use the two moves today; remembering them next week needs another check later.</p>
+    </div>
   );
 }
 

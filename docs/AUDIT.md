@@ -215,3 +215,48 @@ None of these strings is hard-coded for this example: the replies are assembled 
 - Student view: the engine status moved out of the panel header earlier (v3.4); the start screen and menu now say what the tutor can understand without a model.
 
 **Verified.** Typecheck, lint, 275 unit tests, eval (B 50/50, G 14/14, P 11/11, C not run), production build, 35 browser tests twice, visual audit at 320–1440 px and 200 % zoom. Details in LIMITATIONS.
+
+## v6 audit: does it teach like a teacher? (10 Oct 2026)
+
+Done before changing anything, by reading the code and driving the real engines with a script (deterministic teacher, no key).
+
+### The eleven questions
+
+| Question | Answer from the code |
+|---|---|
+| Which teaching decisions are deterministic? | All of them in the deployed app. The policy (`policy.ts`, rule table in `rules.ts`) lists the permitted moves for every turn; without a key the first one is taken. With a key, a model may *choose among* the permitted moves and word them; it can't add a move. Geometry and physics are fully deterministic (`subjects/kernel.ts`). |
+| Which responses come from templates? | Every reply in the live demo (`language/templates.ts`, `language/explanations.ts`, and the subject modules' wording). Variety comes from several wordings per move, chosen by turn number — not from a model. |
+| Is an actual LLM used? | Only if `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set. The live site has none, so no. The model path is tested with fake providers and local fake HTTP servers; it has never been run against a real model here (Policy C "not run"). |
+| How is student intent interpreted? | Ordered regex phrase rules (`intent.ts` `PHRASE_RULES`), an operation lexicon read against the current equation (`understand.ts`), the exact maths parser, and per-subject readers. Unplaced text → a clarifying question, or (with a key) a schema-constrained model reading that is then verified. |
+| How are misconceptions detected? | By computing what the student did to each side (`observe.ts`) and matching step-level and value-level patterns (`misconceptions.ts`); for physics/geometry, by comparing the value to known wrong computations (added the forces, used 360°, forgot to halve…). Shown in the console as hypotheses, never as labels to the student. |
+| How does the tutor remember earlier turns? | Signed session state: attempts, hint level, help requests, a dialog memory (`awaiting`, last question, last proposal, repeats), misconception history, interventions. **Missing before v6:** what *approach* had been tried, how many times in a row the student had been stuck, and whether they'd asked for the answer. |
+| What happens after repeated confusion? | **Defect.** A fixed ladder by hint level. Algebra moved NOTICE → THINK → TRY → show step, but never said it noticed the student was still stuck and never changed modality. Physics/geometry: four "I don't know"s gave four rungs of text hints then the answer — no picture, no smaller question the board could answer. |
+| How are answers verified? | Exactly: rational-arithmetic parser/solver for algebra (equivalence, not string match); exact net-force and angle-sum computation; a closed outcome list for motion questions. Unchanged in v6. |
+| How do voice and whiteboard share state? | Both are driven by the same server response: the tutor message (text, action, rule, anchor, focus terms) is spoken by the browser and drives the board highlight. There is no word-level timing; a highlight lasts for the whole turn. |
+| Are learning outcomes genuinely measured? | Within a session, honestly: first attempts on fresh problems without help, BKT priors, "insufficient evidence" when there isn't enough. No retention check. Physics/geometry only count "solved without hints". |
+| Which console events are real or simulated? | The decision timeline shows the student's real turns from this browser. The evaluation lab runs scripted *students* against the real engine, live. The LLM row is reported "not run" without a key, never simulated. Nothing in the console is mocked. |
+
+### Behaviour probe (before v6), exact tutor replies
+
+- **"Bro, I hate algebra"** → `R22_CLARIFY` "I'm not sure what you mean by “Bro, I hate algebra”. Would a small hint help…" — misread a feeling as unclear input.
+- **"lol this is so boring"** → `R8_HELP_BEFORE_TRYING` — treated as a help request.
+- **"3x = 25" three times** → probe, then the *identical* respectful-challenge reply twice ("I like that you're confident — let's test it…"), assuming confidence the student never expressed.
+- **"Just tell me the answer" ×3** → the help ladder, without ever acknowledging what was asked.
+- **Physics "I don't know" ×4** → four text hints, then the worked answer. No use of the arrows on the board.
+- **"what's your favourite football team?"** → fine (redirect), but the same line every time.
+- **Stock praise:** "Yes! … Nice move." on every valid step; "you've got this skill" and "great work!" at the end.
+
+### What v6 changed, mapped to the five questions
+
+1. **When to explain, ask, wait or intervene** — the action set is now ASK · HINT · EXPLAIN · VISUALIZE · WAIT · RETEACH · ASSESS · ENCOURAGE · CLARIFY (+ VERIFY, RECAP). A *teaching memory* in the signed state records confusion count, strategies tried, hint history, answer requests, last verified line and the current objective. Repeated confusion walks a strategy ladder (simplify → analogy → picture → first part worked → worked solution only when withholding stops helping) in all three lessons; the same mistake twice switches strategy; feelings get ENCOURAGE; "let me think" gets WAIT (explicit signal only — never inferred from elapsed time).
+2. **A reliable harness** — every turn: read → verify → update evidence → permitted moves → choose → word → guard → anti-repetition → whiteboard cue → deliver. Anti-repetition is a deterministic check against everything said on the current problem; it picks another wording or the next permitted move and notes it in the trace.
+3. **Measuring learning** — guided → independent (4x + 3 = 19; same relationship with new numbers in physics/geometry) → transfer (a different form or relationship). Guided and unaided performance are recorded and shown separately; the end screen says what happened today and that retention needs a later check.
+4. **A whiteboard for a 12-year-old** — the balance (drawn from the verified current line, removed as soon as the line changes), move choices on the guided problem after hesitation (checked like typed words), tappable force arrows that answer the tutor's sub-question, tappable/lit angles and a 180° strip.
+5. **Voice, reasoning, drawing and responding as one** — the same server turn carries text, action, the picture cue and the sub-question the board can answer. Optional Google Chirp 3 HD voice behind `/api/tts` (off without a key), with cancellation, no overlap, usage caps and fallback to the browser voice. Not implemented: streaming speech, barge-in while audio plays (other than Stop / tapping the mic), word-level sync.
+
+## v7: student-only app (10 Oct 2026)
+
+- **Removed from the app:** the engineering console (`/console`: overview, decision timeline, evaluation lab, architecture & safety) and `/api/eval`, plus every link to them (home header, lesson menu). Both routes now return 404 (checked in `e2e/home-subjects.spec.ts`). Kept: the engine, verifiers, session state, guard, the eval runner and scenarios (`npm run eval`), `src/engine/rules.ts` (the rule table, still tested), and the per-turn traces the tests read.
+- **Welcome state:** "Ready to figure this out?" with **Start Lesson** and a Sound on/off toggle. Nothing plays until Start; the choice is kept for the tab and shown in the menu. Returning to a lesson in progress skips the welcome ("Welcome back"); Restart starts a clean lesson.
+- **Stages:** Learn Together (Let's work it out) · Try It Yourself (A new problem) · Challenge Yourself (A different twist). The behaviour behind them is unchanged.
+- **Tone:** shorter replies (the balance picture, help openers, the reveal, the off-topic redirect); a bare "why?" in physics and geometry now explains the tutor's latest step (`whyLast`) instead of a general paragraph.

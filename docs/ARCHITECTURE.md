@@ -1,6 +1,6 @@
 # Architecture
 
-TutorOS is one Next.js app (a lesson home, three lessons, an Engineer View) with a framework-free engine (`src/engine/`, ~3,800 lines of TypeScript, no React or vendor SDK imports). Every turn — from the student UI, the console, or the eval runner — goes through the same pure function:
+TutorOS is one Next.js app (a lesson home and three lessons; v7 removed the engineering console from the app) with a framework-free engine (`src/engine/`, ~3,800 lines of TypeScript, no React or vendor SDK imports). Every turn — from the student UI or the eval runner — goes through the same pure function:
 
 ```ts
 step(state, event, deps) → { state', utterance, trace, duplicate? }
@@ -18,6 +18,60 @@ Perceive ──► Permit ──► Choose ──► Guard ──► Update
    │                                            │
    └──────────────── trace (every stage) ◄──────┘
 ```
+
+## v6 in one page: the five questions, answered by the code
+
+### 1. When to explain, ask, wait or intervene — `policy.ts`, `subjects/kernel.ts`, `affect.ts`, `leads.ts`
+
+Each turn the policy returns the **permitted** moves for what was observed, default first. Actions:
+
+| Action | When (examples) | Rule |
+|---|---|---|
+| ASK | a valid step ("what's next?"), a first wrong line (targeted question) | R2, R5 |
+| HINT | one rung more help after effort | R7/R9 `_L1–L3` |
+| EXPLAIN | a "why" question; the first move worked when everything else has been tried | R18, `_L3` |
+| VISUALIZE | still stuck after two explanations in words; the same wrong line after a question and a check | `_L2` as the balance, R7d, `S_HELP_VISUAL` |
+| WAIT | "let me think", "give me a sec" — an explicit signal; never inferred from elapsed time | R10b, `S_WAIT_ON_REQUEST` |
+| RETEACH | "explain it another way"; a second "I don't know" (the first explanation didn't land) | R24, `_L1` |
+| ASSESS | the guided problem is solved (→ 4x + 3 = 19 alone); an independent problem is graded; the lesson ends | R1, R16 |
+| ENCOURAGE | "I hate algebra", "this is boring", "lol" | R40, `S_ENCOURAGE_*` |
+| CLARIFY | short unclear input, a cut-off sentence, a bare "why?" with nothing to refer to | R22* |
+| VERIFY | a computed check (substitution, both sides) | R4, R5c, R33 |
+
+**Repeated confusion** ("I don't know" again and again on one problem) walks a strategy ladder and never repeats one: *simplify* (a smaller question) → *analogy* → *visual* (the whiteboard, often with something to tap) → *worked part* (the tutor does the first move, the student the next) → the worked solution, only once every other approach has been tried or after real attempts. Each subject supplies its own strategies (`SubjectModule.strategy`) and the small questions they ask (`subAnswer`: "which push is stronger?", "what do the two known angles add up to?") — the next answer is read against that question, so "105" can be right in context. **The same mistake again** switches strategy: question → computed check → the balance. **Asking for the answer** is acknowledged and scaffolded; a worked solution is allowed after real attempts and repeated requests, and is never counted as independent work.
+
+### 2. A harness that keeps the session coherent — `engine.ts`, `types.ts`
+
+One authoritative state, signed by the server (HMAC) and held by the browser:
+
+| Brief asked for | Field(s) |
+|---|---|
+| lesson, current problem, current step | `lesson` (subjects), `problems`, `current`, `lastValidRaw` (the verified current line) |
+| verified mathematical state | `board` (every line with its exact verdict and the observed operation) |
+| attempts, misconceptions | `attempts`, `misconceptionCounts`, `misconceptionHistory` |
+| previous actions and explanations | `interventions`, `transcript` (with rule, action, strategy, picture cue) |
+| confusion level, hint count, strategies, last success, objective | `teaching` = `{ confusion, strategies, hintHistory, answerRequests, lastSuccess, objective, affect, offTopic }` |
+| awaiting a sub-question | `dialog.awaiting` (algebra), `awaiting` (subjects) |
+| whiteboard state | derived from `board` + the latest tutor message's `visual` / `figure` / `awaiting` — never computed independently on the client |
+| assessment status | `mastery` (algebra), `records` (subjects) |
+| voice state | client-side only (the speech controller and the mic state machine); never stored or sent |
+
+The turn pipeline: **read** (phrase rules, operation lexicon, exact parser; optional model reading, schema-validated) → **verify** (exact maths / subject verifier) → **update evidence** → **permit** (policy) → **choose** (default, or a model picks among the permitted) → **word** (template, or model) → **guard** (answer/step leaks, false arithmetic, ungrounded equations, length; one repair retry, then the template) → **anti-repetition** (anything already said on this problem is re-worded or replaced by the next permitted move, noted in the trace) → **whiteboard cue** (`visual`, `figure`, `awaiting` on the message) → **deliver** text and optional speech. The trace records every stage, plus the teaching memory after the turn; tests and the eval runner read it (it is kept with the session in the student's browser and not displayed).
+
+### 3. Measuring learning — `mastery.ts`, `src/lib/evidence.ts`
+
+Three stages in every lesson: **guided** (3x + 5 = 20; 12 N vs 8 N; 65° and 40°) → **independent** (4x + 3 = 19; the same relationship with new numbers and directions) → **transfer** (a different form or relationship: a subtraction or the constant first; balancing or motion; a right-angled or isosceles triangle). Recorded per problem: lines written, wrong lines/tries, help turns, the first attempt on each fresh problem, whether it was solved unaided, and mistakes that recur. The end screen keeps guided and unaided separate and says what it can't claim ("a quick check in a few days would tell us").
+
+### 4. A whiteboard for a 12-year-old — `components/student/Notebook.tsx`, `components/lesson/figures.tsx`, `components/SubjectLesson.tsx`
+
+- Algebra: each line checked and joined by the operation the student did; wrong lines struck through with what happened to each side; the terms the tutor is talking about highlighted; **the balance** when the tutor switches to it (drawn from the verified current line, removed as soon as the line changes); **move choices** on the guided problem after the student hesitates — one right, two plausible — sent as words through the same reading as typing (so "Add 5 to both sides" gets the computed "3x + 10 = 25").
+- Physics: force arrows to scale; **tap the stronger push** when the tutor asks (the tap sends "the push to the right" through the normal pipeline); in the explorer the box drifts with the net force.
+- Geometry: tap an angle to light it; the picture turn lights the known angles and shows **the 180° strip** (known parts filled, the rest "?" with no number).
+- Reduced motion turns off every animation; every tappable element is a keyboard-operable button with a label.
+
+### 5. Voice, thinking, drawing and responding as one — `lib/voice/`, `api/tts`, `lib/server/tts.ts`
+
+The same turn drives the text, the speech, the highlight and the picture. With `GOOGLE_TTS_ENABLED=true` the tutor speaks with Google Chirp 3 HD (Sulafat) via the official client library on the server — ADC locally, Workload Identity Federation on Vercel, no keys; per-client rate limit, per-request and daily character caps, timeout, small cache. Any failure falls back to the browser voice for that turn, two in a row for the session. Speaking a new turn cancels the old one; Stop and the mic interrupt speech. Not implemented: streaming speech, barge-in by just talking, word-level sync between audio and highlights. Details: [VOICE.md](VOICE.md).
 
 ## 0. Understanding what the student says (v3.4: `understand.ts`, `intent.ts`, `engine.ts`)
 
@@ -71,11 +125,11 @@ text / transcript ──┤
                          update    records per question: solved, hints, attempts, revealed → "solved alone"
 ```
 
-Every subject trace has the same shape as an algebra trace (`TurnTrace` with `lesson` and `subjectCheck`), so the Engineer View renders all three lessons with one component. Problems are generated from the session seed with invariants tested over 400 seeds (angles sum to 180; the answer is never one of the givens, which is what makes the leak guard sound).
+Every subject trace has the same shape as an algebra trace (`TurnTrace` with `lesson` and `subjectCheck`), so one set of tests and tools reads all three lessons. Problems are generated from the session seed with invariants tested over 400 seeds (angles sum to 180; the answer is never one of the givens, which is what makes the leak guard sound).
 
 ## 1. Teaching policy (`policy.ts`, `rules.ts`)
 
-The policy is a rule table (rule ids listed with *when / does / why* in `rules.ts` and in the console's *Policy & measurement* tab). Given the perceived observation and the learner state, it returns a **set of permitted candidate decisions**, default first. Each `Decision` carries:
+The policy is a rule table (rule ids listed with *when / does / why* in `rules.ts`). Given the perceived observation and the learner state, it returns a **set of permitted candidate decisions**, default first. Each `Decision` carries:
 
 - `action`: one of `ASK · HINT · EXPLAIN · WAIT · VERIFY · RECAP`
 - `rule` and a human-readable `reason`
@@ -192,7 +246,7 @@ idle ──speak(id)──▶ preparing (voices loading) ──▶ speaking ─�
 - Cancelled turns never report "finished"; events from older turns are ignored. Speech errors can't crash the page.
 - The app speaks only a turn the student just caused on this page, and only if sound is on. Opening the mic stops speech and waits 250 ms for the echo to die away. Leaving the page stops speech.
 
-Each spoken turn sends `voice` metadata (segments, interim updates, duplicates ignored, silent resumes, duration, how it ended) with the event; the console shows it. It is never used for teaching.
+Each spoken turn sends `voice` metadata (segments, interim updates, duplicates ignored, silent resumes, duration, how it ended) with the event; it is recorded in the trace and never used for teaching.
 
 ## 6. Mastery measurement (`mastery.ts`)
 
@@ -209,7 +263,7 @@ Bayesian Knowledge Tracing with conventional priors (P(L₀)=0.3, P(T)=0.15, P(s
   - **B** — tutor-v1, deterministic teacher.
   - **C** — tutor-v1 with the LLM teacher. **Runs only when a provider is configured; otherwise reported as `not run`. Never simulated.**
 - **Metrics:** scenarios and assertions passed, scenarios with an answer leak, false maths stated, per-category pass rates, latency p50/p95, model calls, tokens, cost (only if priced).
-- Run from the CLI (`npm run eval`, writes `eval-results.json`, exits 1 if B fails any scenario) or the console's *Eval lab* (scenario × policy matrix with a failure inspector). In production `/api/eval` requires the `x-eval-token` header for C, because it costs money.
+- Run from the CLI (`npm run eval`, writes `eval-results.json`, exits 1 if B fails any scenario). (Earlier versions also ran them from an in-app console; v7 removed it.)
 
 ## Code map
 
@@ -220,8 +274,8 @@ src/engine/            algebra, fraction, intent, observe, misconceptions, reaso
   llm/                   provider.ts, anthropic.ts, openai.ts, teacher.ts, factory.ts
   understand.ts          moves in words → StudentMeaning; checkOperation
   eval/                  scenarios.ts (50), runner.ts
-src/app/               /, /console, /api/turn, /api/eval, /api/health, error boundaries
-src/components/        StudentApp + student/* (notebook, margin notes, next line), ConsoleApp
+src/app/               /, /learn/*, /api/turn, /api/health, /api/tts, error boundaries
+src/components/        StudentApp + student/* (notebook, margin notes, next line), SubjectLesson, lesson/*
 src/lib/               useTutorSession, storage, helpOptions, terms; voice/ (controller, speaker, hooks); server/ (signing, rate limit, logs)
 src/engine/language/   templates.ts, explanations.ts (NOTICE / THINK / TRY / examples)
 tests/                 vitest (13 files)     e2e/   Playwright (4 files + fixtures)

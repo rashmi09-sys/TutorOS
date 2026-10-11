@@ -65,7 +65,6 @@ export function Home() {
     <div className="home">
       <header className="home-bar">
         <span className="home-brand">TutorOS</span>
-        <Link className="rail-link" href="/console">Engineer view</Link>
       </header>
       <main className="home-main">
         <section className="home-intro">
@@ -96,7 +95,7 @@ export function Home() {
 
 function LessonCard({ l, progress, onStartAgain }: { l: LessonInfo; progress: Progress; onStartAgain: () => void }) {
   return (
-    <li className="lesson-card">
+    <li className={`lesson-card s-${l.id}`}>
       <div className="card-figure" aria-hidden>
         {FIGURES[l.id]}
       </div>

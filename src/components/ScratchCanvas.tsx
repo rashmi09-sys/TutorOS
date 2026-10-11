@@ -53,7 +53,7 @@ export function ScratchCanvas({ active, tool, clearSignal }: { active: boolean; 
         const ctx = ref.current!.getContext("2d")!;
         const p = pos(e);
         ctx.globalCompositeOperation = tool === "eraser" ? "destination-out" : "source-over";
-        ctx.strokeStyle = "#1f6b57";
+        ctx.strokeStyle = "#6a3dc2";
         ctx.lineWidth = tool === "eraser" ? 22 : 2.6;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";

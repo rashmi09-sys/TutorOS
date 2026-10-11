@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { VoiceController, browserVoiceEnv, type VoiceMeta, type VoiceSnapshot } from "./controller";
-import { browserSpeaker, type Speaker, type SpeechState } from "./speaker";
+import { browserSpeaker, enableCloudVoice, type Speaker, type SpeechState } from "./speaker";
 
 /**
  * One VoiceController per mounted page. It is created in an effect and disposed in the cleanup,
@@ -59,6 +59,9 @@ export function useSpeaker() {
   useEffect(() => {
     const sp = browserSpeaker();
     ref.current = sp;
+    // The tutor's voice is Google Chirp 3 HD when the server reports it configured; otherwise, and on any
+    // failure, the browser's own voice is used. Never throws.
+    void enableCloudVoice({ speaker: sp }).then((on) => on && setSupported(true));
     const unsub = sp.subscribe(setState);
     queueMicrotask(() => setSupported(sp.supported));
     return () => {

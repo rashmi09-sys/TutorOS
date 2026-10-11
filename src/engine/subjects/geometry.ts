@@ -7,6 +7,7 @@
  * assumed all angles equal, an arithmetic slip in a calculation the student wrote). Anything else is
  * "a value we can't explain" and the tutor asks how they got it.
  */
+import type { Strategy } from "../types";
 import type { RespondContext, SubjectModule } from "./kernel";
 import { numbersIn, pickVariant, randInt, rng } from "./text";
 import type { SubjectCheck, SubjectMove, SubjectProblem, SubjectReading } from "./types";
@@ -37,26 +38,28 @@ function make(kind: Kind, id: string, role: "guided" | "check", v: Record<string
 }
 
 /** Givens never equal the answer, so the leak guard can simply look for the answer's number. */
+/**
+ * Three stages. Guided: 65° and 40°, solved together. Independent: the same relationship (two known angles)
+ * with new values. Transfer: a different relationship — a right-angled triangle, or an isosceles one.
+ */
 export function makeGeometryProblems(seed: number): SubjectProblem[] {
   const r = rng(seed * 7919 + 17);
-  const guided = make("two-angles", "g0", "guided", { a: 65, b: 40 });
-  let check1: SubjectProblem;
-  if (r() < 0.5) {
-    let a: number;
-    do a = randInt(r, 22, 68);
-    while (a === 45);
-    check1 = make("right", "g1", "check", { a });
-  } else {
-    let a: number, b: number, c: number;
-    do {
-      a = randInt(r, 30, 80);
-      b = randInt(r, 25, 75);
-      c = 180 - a - b;
-    } while (c < 25 || c > 110 || c === a || c === b || a === b || a + b === 90 || (a === 65 && b === 40));
-    check1 = make("two-angles", "g1", "check", { a, b });
-  }
+  const guided = { ...make("two-angles", "g0", "guided", { a: 65, b: 40 }), stage: "guided" as const };
+  let a: number, b: number, c: number;
+  do {
+    a = randInt(r, 30, 80);
+    b = randInt(r, 25, 75);
+    c = 180 - a - b;
+  } while (c < 25 || c > 110 || c === a || c === b || a === b || a + b === 90 || (a === 65 && b === 40) || c === 75 || a + b === 105);
+  const check1 = { ...make("two-angles", "g1", "check", { a, b }), stage: "independent" as const };
   let check2: SubjectProblem;
-  if (r() < 0.5) {
+  const pickT = r();
+  if (pickT < 1 / 3) {
+    let x: number;
+    do x = randInt(r, 22, 68);
+    while (x === 45);
+    check2 = make("right", "g2", "check", { a: x });
+  } else if (pickT < 2 / 3) {
     let p: number;
     do p = 2 * randInt(r, 15, 50);
     while (p === 60);
@@ -67,7 +70,7 @@ export function makeGeometryProblems(seed: number): SubjectProblem[] {
     while (b === 60 || b === 45);
     check2 = make("isosceles-apex", "g2", "check", { b });
   }
-  return [guided, check1, check2];
+  return [guided, check1, { ...check2, stage: "transfer" }];
 }
 
 const givens = (p: SubjectProblem): number[] => {
@@ -348,6 +351,59 @@ function leaks(text: string, p: SubjectProblem): boolean {
   return new RegExp(`(?<![\\d.])${e}(?![\\d.])`).test(text);
 }
 
+/** The angles we know, and what they add to (for two-known-angle problems). */
+function knownPair(p: SubjectProblem): [number, number] | null {
+  if (p.kind === "two-angles") return [n(p, "a"), n(p, "b")];
+  if (p.kind === "right") return [90, n(p, "a")];
+  if (p.kind === "isosceles-apex") return [n(p, "b"), n(p, "b")];
+  return null;
+}
+
+/** Different ways in for a student who is still stuck (see kernel.strategyLadder). None states the answer. */
+function strategy(p: SubjectProblem, s: Strategy): ReturnType<NonNullable<SubjectModule["strategy"]>> {
+  const pair = knownPair(p);
+  if (pair) {
+    const [x, y] = pair;
+    const what = p.kind === "isosceles-apex" ? "the top angle" : "the missing angle";
+    if (s === "simplify") return { hintLevel: 1, text: `One small piece first: all three angles together make 180°. The two we know are ${x}° and ${y}°. What do those two add up to?`, awaiting: "known_sum" };
+    if (s === "analogy") return { hintLevel: 2, text: `Think of 180° as a pizza shared by three angles. Two of them have taken ${x}° and ${y}°. How much pizza is left for ${what}?` };
+    if (s === "visual") return { hintLevel: 2, text: `I've lit up the two angles we know on the triangle — tap them if you like. Together, how much of the 180° do they use?`, awaiting: "known_sum", visual: "angle-sum" };
+    if (s === "worked_part") return { hintLevel: 3, text: `First part: ${x}° + ${y}° = ${x + y}°. Your turn: how much of the 180° is left for ${what}?`, visual: "angle-sum" };
+    return null;
+  }
+  // isosceles-base: two equal unknown angles share what the top angle leaves.
+  const top = n(p, "p");
+  if (s === "simplify") return { hintLevel: 1, text: `One small piece first: the top angle is ${top}°, and all three angles make 180°. How much is left for the other two together?` };
+  if (s === "analogy") return { hintLevel: 2, text: `Think of sharing sweets: the top angle takes ${top}° of the 180°, and the two base angles split what's left fairly. How much is left to split?` };
+  if (s === "visual") return { hintLevel: 2, text: "Look at the triangle on the board: the two base angles have the same marks, so they're equal. Tap them to see. What's left of 180° once the top angle has its share?", visual: "angles" };
+  if (s === "worked_part") return { hintLevel: 3, text: `First part: 180° − ${top}° = ${180 - top}°. Your turn: the two base angles share that equally. How big is each one?`, visual: "angles" };
+  return null;
+}
+
+/** The small question "what do the two known angles add up to?" */
+function subAnswer(p: SubjectProblem, awaiting: string, r: SubjectReading, cx: RespondContext): SubjectMove | null {
+  if (awaiting !== "known_sum" || r.value == null) return null;
+  const pair = knownPair(p);
+  if (!pair || r.value === p.answer.value) return null; // the whole answer: the full check handles it
+  const [x, y] = pair;
+  const lvl = cx.state.hintLevel;
+  const what = p.kind === "isosceles-apex" ? "the top angle" : "the missing angle";
+  if (r.value === x + y) return { rule: "G_SUB_RIGHT", action: "ASK", stage: "TRY", reason: "Answered the sub-question (sum of the known angles) correctly: confirm it and take the last small step.", text: `Exactly — ${x}° + ${y}° = ${x + y}°, so that much of the 180° is used up. How much is left for ${what}?`, hintLevel: lvl, revealAllowed: false, assistive: false, visual: "angle-sum" };
+  const tries = cx.state.transcript.filter((m) => m.role === "tutor" && m.rule === "G_SUB_RECHECK" && m.turn > (cx.state.awaiting?.turn ?? 0) - 6).length;
+  if (tries >= 1) return { rule: "G_SUB_SHOWN", action: "EXPLAIN", stage: "TRY", reason: `Second wrong sum (${r.value}) for the known angles: the addition isn't the point of the lesson — show it, and leave the 180° step to them.`, text: `Let's add them together: ${x}° + ${y}° = ${x + y}°. So how much of the 180° is left for ${what}?`, hintLevel: Math.max(lvl, 2), revealAllowed: false, assistive: true, help: true, visual: "angle-sum", strategy: "worked_part" };
+  return { rule: "G_SUB_RECHECK", action: "HINT", stage: "NOTICE", reason: `Gave ${r.value} for ${x}° + ${y}°: ask them to re-add, without doing it for them.`, text: `Not quite — try adding ${x} and ${y} again. What do you get?`, hintLevel: Math.max(lvl, 1), revealAllowed: false, assistive: true, help: true, awaiting: "known_sum" };
+}
+
+/** "Why?" right after a move: the reason for THAT move, in a sentence or two. */
+function whyLast(p: SubjectProblem, last: string): string | null {
+  const t = last.toLowerCase();
+  if (/square|right angle|90°/.test(t)) return "Because the little square means exactly 90° — so that corner already uses half of the 180°.";
+  if (/equal|marks|halve|share.*equally|split/.test(t)) return "Because the little marks mean those two angles are the same size, so they share what's left equally.";
+  if (/used up|add|together|left for|pizza|−/.test(t)) return "Because the known angles take their share of the 180° first — whatever is left over belongs to the missing angle.";
+  if (/180/.test(t)) return "Because a triangle's three corners always fit together into a straight line, and a straight line is 180°.";
+  return null;
+}
+
 export const geometry: SubjectModule = {
   id: "geometry",
   title: "Angles in a triangle",
@@ -362,6 +418,9 @@ export const geometry: SubjectModule = {
   example,
   leaks,
   vocabulary: { concepts: ["sum_180", "sum_360"], outcomes: [], topics: ["why_180", "isosceles", "right_angle", "angle"] },
-  nextIntro: (next) => `Now one to try on your own. ${next.prompt}`,
+  nextIntro: (next) => (next.stage === "transfer" ? `Ready for a challenge? A different twist. ${next.prompt}` : `Now try it yourself — a new problem. ${next.prompt}`),
+  strategy,
+  subAnswer,
+  whyLast,
   checkable: () => "I can check an angle in degrees, and statements like “the angles add up to 180”",
 };

@@ -1,6 +1,7 @@
 import type { SessionState, StudentEvent, TurnTrace } from "../types";
 import { extractEquations } from "../guard";
 import { isConstant, isSolvedForm, normalizeMath, parseEquation } from "../algebra";
+import { GENERIC_PRAISE, HUMOUR, languageProblems } from "./language";
 
 /**
  * Evaluation scenarios. The STUDENT side is scripted (reproducible); the TUTOR
@@ -18,7 +19,10 @@ export type AssertionCategory =
   | "appropriateness" // responds to what the student actually said
   | "recovery" // repeated errors get escalating, different help
   | "mastery" // independent evidence is measured honestly
-  | "robustness"; // odd inputs don't corrupt the session
+  | "robustness" // odd inputs don't corrupt the session
+  | "context" // the reply builds on the lesson so far (current line, last question)
+  | "language" // age-appropriate, specific, honest about being an AI (deterministic rules, see eval/language.ts)
+  | "repetition"; // never the same reply or the same approach again on one problem
 
 export interface AssertionResult {
   name: string;
@@ -162,6 +166,43 @@ function verdictAt(tr: TurnTrace[], turn: number, v: string): AssertionResult {
 
 function stillGuided(s: SessionState, boardLen: number): AssertionResult {
   return { name: "nothing solved or written for the student", category: "leak", passed: s.phase === "GUIDED" && s.board.length === boardLen, detail: `phase ${s.phase}, ${s.board.length} board lines` };
+}
+
+
+/* ---- v6: teaching behaviour — repetition, language, context ---- */
+export function ageAppropriate(tr: TurnTrace[]): AssertionResult {
+  const bad = tr.flatMap((x) => languageProblems(x.utterance).map((p) => `turn ${x.turn}: ${p}`));
+  return { name: "age-appropriate language (no put-downs, no claim to be human, short sentences)", category: "language", passed: bad.length === 0, detail: bad.length ? bad.join("; ") : "All replies pass the language rules." };
+}
+export function noGenericPraise(tr: TurnTrace[]): AssertionResult {
+  const bad = tr.filter((x) => GENERIC_PRAISE.test(x.utterance));
+  return { name: "no stock praise (\"Great job!\", \"You've got this!\")", category: "language", passed: bad.length === 0, detail: bad.length ? bad.map((x) => `turn ${x.turn}: "${x.utterance}"`).join("; ") : "Feedback is specific." };
+}
+function noHumourAt(tr: TurnTrace[], turn: number): AssertionResult {
+  const x = at(tr, turn);
+  return { name: `turn ${turn}: no jokes for a worried or frustrated student`, category: "language", passed: !!x && !HUMOUR.test(x.utterance), detail: x ? `"${x.utterance}"` : "turn missing" };
+}
+/** No reply identical to ANY earlier reply on the same problem (not just the previous one). */
+export function noRepeatOnProblem(tr: TurnTrace[]): AssertionResult {
+  const seen = new Map<string, number>();
+  for (const x of tr) {
+    if (x.decision.rule === "R11_REPEAT") continue;
+    const key = `${x.decision.templateVars?.problem ?? ""}|${x.utterance}`;
+    if (seen.has(key)) return { name: "never says the same thing twice on one problem", category: "repetition", passed: false, detail: `turns ${seen.get(key)} and ${x.turn}: "${x.utterance}"` };
+    seen.set(key, x.turn);
+  }
+  return { name: "never says the same thing twice on one problem", category: "repetition", passed: true, detail: `${tr.length} replies, all different.` };
+}
+function strategiesDiffer(tr: TurnTrace[], from: number, to: number): AssertionResult {
+  const used = tr.filter((x) => x.turn >= from && x.turn <= to).map((x) => x.decision.strategy ?? x.decision.rule);
+  return { name: `turns ${from}–${to}: a different approach each time`, category: "repetition", passed: new Set(used).size === used.length, detail: used.join(" → ") };
+}
+function actionAt(tr: TurnTrace[], turn: number, actions: string[], category: AssertionCategory = "appropriateness"): AssertionResult {
+  const x = at(tr, turn);
+  return { name: `turn ${turn}: ${actions.join(" or ")}`, category, passed: !!x && actions.includes(x.decision.action), detail: x ? `${x.decision.action} ${x.decision.rule}: "${x.utterance}"` : "turn missing" };
+}
+function mentions(tr: TurnTrace[], turn: number, re: RegExp, name: string): AssertionResult {
+  return says(tr, turn, re, name, "context");
 }
 
 export const SCENARIOS: Scenario[] = [
@@ -659,5 +700,81 @@ export const SCENARIOS: Scenario[] = [
     why: "Asking to go back restates the last message without advancing anything.",
     inputs: [{ type: "start" }, t("I will do BODMAS multiplication."), t("Go back.")],
     check: (tr) => [ruleIn(tr, 3, ["R11_REPEAT"], "robustness"), { name: "state did not advance", category: "robustness", passed: !at(tr, 3)!.stateDelta.attempts && !at(tr, 3)!.stateDelta.hintLevel, detail: JSON.stringify(at(tr, 3)!.stateDelta) }],
+  },
+  /* ---- v6: teaching behaviour ---- */
+  {
+    id: "v6-dont-know-four-times",
+    title: "\"I don't know\" four times in a row",
+    why: "Repeated confusion gets a different approach each time — simpler, an analogy, the balance picture, then the first move worked — never the same explanation again, and never the answer.",
+    inputs: [{ type: "start" }, t("I don't know"), t("I don't know"), t("I don't know"), t("I don't know")],
+    check: (tr) => [
+      actionAt(tr, 2, ["ASK"]),
+      actionAt(tr, 3, ["RETEACH"]),
+      actionAt(tr, 4, ["VISUALIZE"]),
+      actionAt(tr, 5, ["EXPLAIN"]),
+      says(tr, 3, /didn'?t land/i, "turn 3 says the last explanation didn't land", "context"),
+      says(tr, 4, /picture|balance/i, "turn 4 switches to a picture", "appropriateness"),
+      strategiesDiffer(tr, 2, 5),
+      noRepeatOnProblem(tr),
+      noPrematureLeak(tr),
+      ageAppropriate(tr),
+      allMathTrue(tr),
+    ],
+  },
+  {
+    id: "v6-same-mistake-three-times",
+    title: "The same wrong line three times (3x = 25)",
+    why: "A repeated mistake gets a change of strategy — a question, then a computed check, then the balance — not the same hint again.",
+    inputs: [{ type: "start" }, t("3x = 25"), t("3x = 25"), t("3x = 25")],
+    check: (tr) => [diagnosisAt(tr, 2, "SIGN_ERROR_INVERSE_OP"), ruleIn(tr, 2, ["R5"]), ruleIn(tr, 3, ["R4"]), ruleIn(tr, 4, ["R7d_SAME_MISTAKE_VISUAL"], "recovery"), says(tr, 3, /same line/i, "notices it's the same line (doesn't assume confidence)", "context"), strategiesDiffer(tr, 2, 4), noRepeatOnProblem(tr), noPrematureLeak(tr), allMathTrue(tr)],
+  },
+  {
+    id: "v6-unexpected-correct",
+    title: "Unexpected correct answers: the reversed step, then straight to x = 5",
+    why: "Correct work in an unexpected form is accepted and named specifically; skipping a step is fine if it's right.",
+    inputs: [{ type: "start" }, t("15 = 3x"), t("x = 5")],
+    check: (tr, s) => [ruleIn(tr, 2, ["R2_VALID_STEP"], "math"), says(tr, 2, /both sides|balanced/i, "names what they did", "language"), ruleIn(tr, 3, ["R1_GUIDED_SOLVED"], "math"), mentions(tr, 3, /4x \+ 3 = 19/, "moves on to 4x + 3 = 19"), noGenericPraise(tr), { name: "the next problem is the independent one", category: "mastery", passed: s.problems[1]?.text === "4x + 3 = 19", detail: s.problems.map((p) => p.text).join(", ") }],
+  },
+  {
+    id: "v6-explain-differently-three-times",
+    title: "\"Explain it another way\" three times",
+    why: "Each request is answered with the same amount of help in different words.",
+    inputs: [{ type: "start" }, t("I'm stuck"), t("explain it another way"), t("explain it another way"), t("explain it another way")],
+    check: (tr) => [actionAt(tr, 3, ["RETEACH"]), actionAt(tr, 4, ["RETEACH"]), actionAt(tr, 5, ["RETEACH"]), noRepeatOnProblem(tr), noPrematureLeak(tr)],
+  },
+  {
+    id: "v6-off-topic-and-back",
+    title: "Off-topic question in the middle of a problem",
+    why: "Doesn't answer it, doesn't lose the place: comes back to the current line.",
+    inputs: [{ type: "start" }, t("3x = 15"), t("what's your favourite football team?"), t("x = 5")],
+    check: (tr, s) => [ruleIn(tr, 3, ["R13_REDIRECT"]), mentions(tr, 3, /3x = 15/, "returns to the current line, 3x = 15"), ruleIn(tr, 4, ["R1_GUIDED_SOLVED"], "context"), { name: "the off-topic message wasn't an attempt", category: "robustness", passed: !at(tr, 3)!.stateDelta.attempts, detail: JSON.stringify(at(tr, 3)!.stateDelta) }, ageAppropriate(tr), { name: "solved", category: "context", passed: s.current === 1, detail: `current ${s.current}` }],
+  },
+  {
+    id: "v6-answer-request-acknowledged",
+    title: "\"Just tell me the answer\" — acknowledged, then scaffolded",
+    why: "The request is heard and answered honestly (why not yet), with a smaller step instead.",
+    inputs: [{ type: "start" }, t("just tell me the answer"), t("just tell me the answer")],
+    check: (tr) => [says(tr, 2, /could just tell you/i, "acknowledges the request", "context"), endsWithQuestion(tr, 2), says(tr, 3, /answer/i, "still acknowledges on the second request", "context"), noRepeatOnProblem(tr), noPrematureLeak(tr)],
+  },
+  {
+    id: "v6-feelings",
+    title: "\"Bro, I hate algebra\" then \"I'm so bad at maths\"",
+    why: "Feelings get a short, kind acknowledgement — light humour about the subject only, none for worry — and the lesson continues.",
+    inputs: [{ type: "start" }, t("Bro, I hate algebra"), t("I'm so bad at maths"), t("3x = 15")],
+    check: (tr) => [actionAt(tr, 2, ["ENCOURAGE"]), endsWithQuestion(tr, 2), ruleIn(tr, 3, ["R8", "R9"]), noHumourAt(tr, 3), ruleIn(tr, 4, ["R2_VALID_STEP"], "context"), ageAppropriate(tr), noPrematureLeak(tr)],
+  },
+  {
+    id: "v6-thinking-wait",
+    title: "\"Let me think\"",
+    why: "An explicit signal to wait: one short line, no new question, nothing counted.",
+    inputs: [{ type: "start" }, t("let me think")],
+    check: (tr, s) => [actionAt(tr, 2, ["WAIT"]), says(tr, 2, /\?/, "doesn't push a new question", "appropriateness", true), { name: "not counted as an attempt or help", category: "robustness", passed: s.attempts === 0 && s.helpRequests === 0, detail: `attempts ${s.attempts}, help ${s.helpRequests}` }],
+  },
+  {
+    id: "v6-independent-transfer",
+    title: "Guided → 4x + 3 = 19 on their own → a new twist on their own",
+    why: "Guided success and unaided success are recorded separately; both independent problems solved first time count as evidence.",
+    inputs: [{ type: "start" }, t("3x = 15"), t("x = 5"), t("4x = 16"), t("x = 4"), answerCurrent],
+    check: (tr, s) => [ruleIn(tr, 5, ["R1_TRANSFER_SOLVED_INDEPENDENT"], "mastery"), { name: "the guided problem is not counted as independent", category: "mastery", passed: !s.mastery.observations.some((o) => o.problemId === "p0" && o.kind === "transfer"), detail: JSON.stringify(s.mastery.observations) }, { name: "both independent problems recorded as unaided", category: "mastery", passed: s.mastery.observations.filter((o) => o.kind === "transfer" && o.correct && !o.assisted).length === 2, detail: JSON.stringify(s.mastery.observations) }, { name: "the third problem is a different form", category: "mastery", passed: !!s.problems[2] && s.problems[2].form !== "ax+b=c", detail: s.problems[2]?.text ?? "none" }, noGenericPraise(tr)],
   },
 ];

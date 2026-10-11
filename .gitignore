@@ -6,3 +6,4 @@ eval-results.json
 test-results
 playwright-report
 tsconfig.tsbuildinfo
+.vercel

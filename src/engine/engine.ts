@@ -5,7 +5,8 @@ import { guardUtterance, type GuardSpec } from "./guard";
 import { MAX_TRANSFER_ITEMS, assistedCompletion, finalStatus, initialMastery, observe } from "./mastery";
 import { MISCONCEPTIONS, diagnoseStep, diagnoseValue, type Diagnosis } from "./misconceptions";
 import { buildContext, candidates as policyCandidates, stepCheck, substitutionCheck, type PolicyContext } from "./policy";
-import { GUIDED_PROBLEM, generateTransferProblem, problemAnswer } from "./problems";
+import { FIRST_TRANSFER, GUIDED_PROBLEM, generateTransferProblem, problemAnswer, type Problem } from "./problems";
+import { renderTemplate } from "./language/templates";
 import { checkClaims, type ClaimCheck } from "./reasoning";
 import { observeOperation } from "./observe";
 import { whyTopic } from "./why";
@@ -72,7 +73,32 @@ export function createSession(opts: { sessionId: string; seed?: number; now?: Da
     mastery: initialMastery(),
     board: [{ id: `${p.id}-given`, problemId: p.id, kind: "problem", latex: p.latex, status: "given", raw: p.text, turn: 0 }],
     transcript: [],
+    teaching: { objective: objectiveFor(p), confusion: 0, strategies: [], hintHistory: [], answerRequests: 0, affect: 0, offTopic: 0 },
   };
+}
+
+/** One line on what a problem is for (teaching memory; shown in the Engineer View). */
+export function objectiveFor(p: Problem): string {
+  const stage = p.role === "guided" ? "Guided practice" : p.id === "t1" ? "Independent practice" : "Transfer";
+  return `${stage}: solve ${p.text} by undoing the constant, then the multiplication, doing the same to both sides.`;
+}
+
+/** Strategies, confusion, hint history: what the tutor remembers about how teaching has gone (read by the policy next turn). */
+function updateTeaching(state: SessionState, obs: Observation, decision: Decision, problemIdBefore: string) {
+  const tm = (state.teaching ??= { objective: objectiveFor(state.problems[state.current]), confusion: 0, strategies: [], hintHistory: [], answerRequests: 0, affect: 0, offTopic: 0 });
+  if (obs.kind === "help" || obs.kind === "confused") tm.confusion += 1;
+  if (["valid_step", "correct_answer", "correct_flawed"].includes(obs.kind) || (obs.kind === "operation" && obs.opCheck?.verdict === "correct_next")) tm.confusion = 0;
+  if (obs.kind === "valid_step" || obs.kind === "correct_answer") tm.lastSuccess = obs.studentRaw;
+  if (obs.request === "answer") tm.answerRequests += 1;
+  if (obs.affect) tm.affect += 1;
+  if (obs.kind === "off_topic") tm.offTopic += 1;
+  if (decision.strategy && tm.strategies.at(-1) !== decision.strategy) tm.strategies.push(decision.strategy);
+  if (decision.assistive) {
+    tm.hintHistory.push({ turn: state.turn, problemId: problemIdBefore, rule: decision.rule, strategy: decision.strategy });
+    if (tm.hintHistory.length > 40) tm.hintHistory.shift();
+  }
+  const now = state.problems[state.current];
+  if (now.id !== problemIdBefore) Object.assign(tm, { objective: objectiveFor(now), confusion: 0, strategies: [], answerRequests: 0, lastSuccess: undefined });
 }
 
 const deterministic = new DeterministicTeacher();
@@ -94,6 +120,7 @@ export async function step(prev: SessionState, event: StudentEvent, deps: StepDe
   const turnId = `${state.sessionId}-t${state.turn}`;
   const errors: string[] = [];
   const llmCalls: LlmCall[] = [];
+  const notes: string[] = [];
   const phaseBefore = state.phase;
   const snapshot = summarize(prev);
 
@@ -145,7 +172,7 @@ export async function step(prev: SessionState, event: StudentEvent, deps: StepDe
       if (r.meaning) intent = { ...intent, kind: "OPERATION", meaning: r.meaning, question: r.meaning.isQuestion, recognisedBy: "llm", phraseRule: `LLM(${intent.kind}→${r.meaning.operation?.kind ?? r.meaning.act})` };
       else if (r.request) intent = { ...intent, ...intentForRequest(r.request), recognisedBy: "llm", phraseRule: `LLM(${intent.kind}→${r.request})` };
     }
-    const base = { insistent: intent.insistent, frustrated: intent.frustrated, question: intent.question, interruptedTutor: !!event.interruptedTutor, request: intent.request };
+    const base = { insistent: intent.insistent, frustrated: intent.frustrated, question: intent.question, interruptedTutor: !!event.interruptedTutor, request: intent.request, affect: intent.affect };
     if (state.phase === "COMPLETE" || state.turn > MAX_TURNS) obs = { kind: "after_complete", ...base };
     else
       switch (intent.kind) {
@@ -176,6 +203,14 @@ export async function step(prev: SessionState, event: StudentEvent, deps: StepDe
         case "OFF_TOPIC":
           // "This is stupid, I hate this" isn't off-topic: it's a student struggling. Treat it as a request for help.
           obs = intent.frustrated ? { kind: "help", ...base } : { kind: "off_topic", ...base };
+          break;
+        case "AFFECT":
+          // Worry and frustration are a student struggling: help, with the feeling acknowledged first.
+          // Dislike, boredom and laughter get an acknowledgement and the question back (ENCOURAGE).
+          obs = intent.affect === "worried" || intent.affect === "frustrated" ? { kind: "help", ...base } : { kind: "affect", ...base };
+          break;
+        case "THINKING":
+          obs = { kind: "thinking", ...base };
           break;
         case "REPHRASE_REQUEST":
           obs = { kind: "rephrase", ...base };
@@ -278,9 +313,25 @@ export async function step(prev: SessionState, event: StudentEvent, deps: StepDe
     ({ chosen: decision, utterance, source, rationale } = r);
     llmCalls.push(...r.calls);
     errors.push(...r.errors);
+    // Never say the same thing twice on one problem (unless asked to repeat): try another wording of the same
+    // move, then the next permitted move. Deterministic, and every alternative passes the same guard.
+    if (decision.rule !== "R11_REPEAT") {
+      const said = new Set(state.transcript.filter((m) => m.role === "tutor" && state.turn - m.turn <= 12).map((m) => m.text));
+      if (said.has(utterance)) {
+        const alts: [Decision, string][] = [];
+        for (let v = 1; v <= 3; v++) alts.push([decision, renderTemplate(decision.template, decision.templateVars, state.turn + v)]);
+        for (const c of cands.filter((c) => c !== decision)) alts.push([c, renderTemplate(c.template, c.templateVars, state.turn)]);
+        const fresh = alts.find(([c, text]) => !said.has(text) && guard(c, text).ok);
+        if (fresh) {
+          notes.push(`Avoided repeating an earlier reply (${decision.rule}); used ${fresh[0] === decision ? "another wording of the same move" : `the next permitted move, ${fresh[0].rule}`}.`);
+          [decision, utterance] = fresh;
+        } else notes.push(`Repeated an earlier reply (${decision.rule}): no alternative wording or permitted move was available.`);
+      }
+    }
     updateCounters(state, obs, decision, diagnosis);
   }
   applyBoardOps(state, decision, obs, ctx);
+  updateTeaching(state, obs, decision, problem.id);
   if (decision.action === "EXPLAIN" && decision.nextStepAllowed && decision.template !== "concept") {
     state.lastShown = { prevRaw: ctx.currentRaw, operation: ctx.next.operation, resultRaw: ctx.next.resultRaw, arithmetic: ctx.next.arithmetic };
   }
@@ -308,7 +359,7 @@ export async function step(prev: SessionState, event: StudentEvent, deps: StepDe
   state.lastTutorText = utterance;
   state.lastTutorGrounded = Array.from(new Set([...grounded, ...decision.allowedEquations, ...(decision.nextStepAllowed ? [ctx.next.resultRaw] : [])]));
   state.revealedLast = decision.revealAllowed;
-  state.transcript.push({ role: "tutor", text: utterance, action: decision.action, turn: state.turn, anchor: anchorFor(state, decision, ctx, studentEntry.id), focus: decision.focus ?? [], rule: decision.rule, hintLevel: decision.hintLevel, stage: decision.stage });
+  state.transcript.push({ role: "tutor", text: utterance, action: decision.action, turn: state.turn, anchor: anchorFor(state, decision, ctx, studentEntry.id), focus: decision.focus ?? [], rule: decision.rule, hintLevel: decision.hintLevel, stage: decision.stage, ...(decision.visual ? { visual: decision.visual } : {}), ...(decision.visual === "balance" ? { figure: { a: Number(decision.templateVars.balA), b: Number(decision.templateVars.balB), c: Number(decision.templateVars.balC) } } : {}) });
 
   const trace: TurnTrace = {
     turnId,
@@ -336,6 +387,8 @@ export async function step(prev: SessionState, event: StudentEvent, deps: StepDe
     utterance,
     totalLatencyMs: Math.round(performance.now() - t0),
     errors,
+    ...(notes.length ? { notes } : {}),
+    teaching: state.teaching ? { confusion: state.teaching.confusion, strategies: [...state.teaching.strategies], answerRequests: state.teaching.answerRequests, lastSuccess: state.teaching.lastSuccess, objective: state.teaching.objective } : undefined,
   };
   return { state, utterance, trace };
 }
@@ -412,7 +465,10 @@ function perceiveMath(
   }
   // Insisting = saying so, or repeating the same wrong claim.
   const claim = obs.studentValue;
-  if (claim && state.persistentClaim === claim) obs.insistent = true;
+  if (claim && state.persistentClaim === claim) {
+    if (!obs.insistent) obs.repeatedClaim = true;
+    obs.insistent = true;
+  }
   state.persistentClaim = claim;
   return obs;
 }
@@ -445,7 +501,9 @@ function baselineDecision(base: Decision, ctx: PolicyContext): Decision {
     nextStepAllowed: true,
     assistive: true,
     template: "reveal",
-    templateVars: { ...base.templateVars, worked: worked(ctx) },
+    templateVars: { ...base.templateVars, worked: worked(ctx), lead: "" },
+    strategy: "worked",
+    visual: undefined,
   };
 }
 
@@ -503,6 +561,8 @@ function operationDiagnosis(m: StudentMeaning, c: OperationCheck | undefined, sa
 function intentForRequest(r: HelpRequest): Pick<Intent, "kind" | "request"> {
   const kind: Record<HelpRequest, Intent["kind"]> = {
     stuck: "HELP_REQUEST",
+    answer: "HELP_REQUEST",
+    thinking: "THINKING",
     hint: "HELP_REQUEST",
     next: "HELP_REQUEST",
     more_help: "HELP_REQUEST",
@@ -551,8 +611,8 @@ function updateCounters(state: SessionState, obs: Observation, decision: Decisio
   if (prevIv && ["valid_step", "correct_answer", "correct_flawed", "invalid"].includes(obs.kind)) {
     prevIv.outcome = obs.kind === "invalid" ? "no_progress" : "progress";
   }
-  if (["ASK", "HINT", "EXPLAIN", "VERIFY", "WAIT"].includes(decision.action) && obs.kind !== "correct_answer" && obs.kind !== "correct_flawed") {
-    state.interventions.push({ problemId: problem.id, turn: state.turn, action: decision.action, rule: decision.rule, misconception: diagnosis?.id });
+  if (["ASK", "HINT", "EXPLAIN", "VISUALIZE", "RETEACH", "ENCOURAGE", "CLARIFY", "VERIFY", "WAIT"].includes(decision.action) && obs.kind !== "correct_answer" && obs.kind !== "correct_flawed") {
+    state.interventions.push({ problemId: problem.id, turn: state.turn, action: decision.action, rule: decision.rule, misconception: diagnosis?.id, assistive: !!decision.assistive || undefined });
   }
 }
 
@@ -573,7 +633,7 @@ function transition(state: SessionState, obs: Observation): { vars: Record<strin
     const mastered = state.mastery.status === "mastered";
     return {
       decision: {
-        action: "RECAP",
+        action: "ASSESS",
         rule: mastered ? "R16_MASTERY_CONFIRMED" : "R16_LESSON_END_NOT_MASTERED",
         id: mastered ? "R16_MASTERY_CONFIRMED" : "R16_LESSON_END_NOT_MASTERED",
         reason: mastered
@@ -583,15 +643,17 @@ function transition(state: SessionState, obs: Observation): { vars: Record<strin
         template: flawed ? "correct_flawed" : "lesson_end",
       },
       vars: {
-        lead: unassisted ? "Correct — and you did that one entirely on your own." : "You got there!",
+        lead: unassisted ? "Correct — and that one was all you, no hints." : "You got there.",
         followup: mastered
-          ? "That's two in a row on your own — you've got this skill. Lesson complete!"
-          : "You've worked hard today — we'll practise this a bit more next time. Lesson complete!",
+          ? "That's two new problems in a row without help, including the one with a twist — so the two moves seem to make sense to you. Lesson complete!"
+          : "You stuck with it today — we'll practise this a bit more next time. Lesson complete!",
       },
     };
   }
 
-  const next = generateTransferProblem(state.seed, transfersDone, state.problems);
+  // The first independent check is always 4x + 3 = 19: same shape as the guided problem, new numbers — a
+  // fair first test of whether the two moves transfer. Later checks change the surface form.
+  const next = transfersDone === 0 ? FIRST_TRANSFER : generateTransferProblem(state.seed, transfersDone, state.problems);
   state.problems.push(next);
   state.current = state.problems.length - 1;
   state.phase = "TRANSFER";
@@ -607,7 +669,9 @@ function transition(state: SessionState, obs: Observation): { vars: Record<strin
   state.lastStage = undefined;
   state.explainVariant = 0;
   state.board.push({ id: `${next.id}-given`, problemId: next.id, kind: "problem", latex: next.latex, status: "given", raw: next.text, turn: state.turn });
-  return { vars: { nextProblem: next.text, followup: `Try this one on your own: ${next.text}` } };
+  // The third problem is the transfer: say what's different about it, so the twist is visible.
+  const twist = next.form === "ax-b=c" ? "this time something is taken away" : next.form === "b+ax=c" ? "this time the number comes first" : "new numbers again";
+  return { vars: { nextProblem: next.text, followup: transfersDone >= 1 ? `Ready for a challenge? A different twist — ${twist}: ${next.text}` : `Try this one yourself: ${next.text}` } };
 }
 
 /** Whiteboard entries come only from validated, deterministic data — never from model text. */
@@ -689,6 +753,9 @@ function learnerSummary(s: SessionState) {
     helpRequests: s.helpRequests,
     silences: s.silences,
     recurringMisconceptions: recurring,
+    timesStuckOnThisProblem: s.teaching?.confusion ?? 0,
+    approachesAlreadyTried: s.teaching?.strategies ?? [],
+    askedForTheAnswer: s.teaching?.answerRequests ?? 0,
     masteryEstimate: Math.round(s.mastery.pKnown * 100) / 100,
   };
 }

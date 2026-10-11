@@ -1,7 +1,6 @@
 /** API route handlers called directly — the same code Next.js serves. */
 import { describe, expect, it } from "vitest";
 import { POST as turn } from "@/app/api/turn/route";
-import { POST as evalRoute } from "@/app/api/eval/route";
 import { GET as health } from "@/app/api/health/route";
 import { signState, verifyState } from "@/lib/server/session-token";
 import { rateLimit } from "@/lib/server/rate-limit";
@@ -61,13 +60,15 @@ describe("/api/turn", () => {
   });
 });
 
-describe("/api/eval and /api/health", () => {
-  it("runs A and B live, and reports C as not run (never simulated) without credentials", async () => {
-    const res = await evalRoute(new Request("http://x/api/eval", { method: "POST", headers: { "x-forwarded-for": "10.1.1.1" }, body: JSON.stringify({ suites: ["A", "B", "C"] }) }));
-    const d = await res.json();
-    expect(d.B.metrics.scenarios.passed).toBe(d.B.metrics.scenarios.total);
-    expect(d.A.metrics.scenariosWithLeak).toBeGreaterThan(0);
-    expect(d.C.notRun).toMatch(/No LLM provider configured/);
+describe("/api/health and the evaluation suites", () => {
+  it("the suites still run from code (npm run eval): B passes, the answer-giver leaks", async () => {
+    const { runSuite } = await import("@/engine/eval/runner");
+    const { DeterministicTeacher } = await import("@/engine/llm/teacher");
+    const t = new DeterministicTeacher();
+    const B = await runSuite(t, "tutor-v1");
+    const A = await runSuite(t, "baseline-answer-giver");
+    expect(B.metrics.scenarios.passed).toBe(B.metrics.scenarios.total);
+    expect(A.metrics.scenariosWithLeak).toBeGreaterThan(0);
   });
   it("health reports deterministic mode and the dev signing key honestly", async () => {
     const d = await (await health()).json();

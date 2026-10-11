@@ -1,6 +1,6 @@
 # Limitations: what has and hasn't been verified
 
-Status as of v4 (lesson home, physics and geometry lessons, Engineer View redesign), 9 Oct 2026. "Verified" means a check was executed in this repository and passed. Nothing below is estimated.
+Status as of v6 (teaching memory and strategy ladder, new actions, interactive whiteboard, optional cloud voice, three-stage lessons), 10 Oct 2026. "Verified" means a check was executed in this repository and passed. Nothing below is estimated.
 
 ## Verified
 
@@ -8,27 +8,27 @@ Status as of v4 (lesson home, physics and geometry lessons, Engineer View redesi
 |---|---|---|
 | Types | `npm run typecheck` | clean |
 | Lint | `npm run lint` (ESLint 9: typescript-eslint, react-hooks, next) | 0 errors, 0 warnings |
-| Engine, understanding of moves in words, voice state machine, tutor speech, language rules, LLM control logic (incl. structured interpretation), server routes | `npm test` (vitest) | 278 / 278 passed, 15 files |
-| Full student journey, every visible control, voice interaction with mocked speech APIs, the reported BODMAS conversation spoken end to end with its Engineer View trace, Edit before sending — in a real browser against the production build | `npm run test:e2e` (Playwright, Chromium) | 41 / 41 passed, 6 files, two consecutive runs (includes navigation and progress persistence across all three lessons) |
-| Teaching behaviour on 50 scripted algebra scenarios | `npm run eval` | B 50/50 scenarios, 212/212 assertions, 0 answer leaks, 0 false maths. A (answer-giver control) 7/50, 25 scenarios leak the answer. |
-| Geometry and physics lessons | `npm run eval` (G, P) | G 14/14 scenarios, 40/40 checks; P 11/11, 30/30; 0 leaks, 0 model calls |
+| Engine, understanding of moves in words, voice state machine, tutor speech, language rules, LLM control logic (incl. structured interpretation), server routes | `npm test` (vitest) | 332 / 332 passed, 18 files (incl. `tests/teaching.test.ts`: the twelve teaching-behaviour cases; `tests/tts.test.ts`: the optional cloud voice with a fake Google endpoint) |
+| Full student journey, every visible control, voice interaction with mocked speech APIs, the reported BODMAS conversation spoken end to end with its recorded trace, Edit before sending — in a real browser against the production build | `npm run test:e2e` (Playwright, Chromium) | 46 / 46 passed, 7 files, two consecutive runs (includes the Grade 7 journey, the whiteboard interactions in `e2e/whiteboard.spec.ts`, and navigation and progress persistence across all three lessons) |
+| Teaching behaviour on 59 scripted algebra scenarios | `npm run eval` | B 59/59 scenarios, 269/269 assertions, 0 answer leaks, 0 false maths, context 9/9, language 7/7, repetition 6/6. A (answer-giver control) 9/59, 30 scenarios leak the answer. |
+| Geometry and physics lessons | `npm run eval` (G, P) | G 17/17 scenarios, 59/59 checks; P 16/16, 53/53; 0 leaks, 0 model calls |
 | Production build | `npm run build` | passes; no key names in the client bundle (grep of `.next/static`) |
-| Visual audit | `scripts/ui-audit.ts` against the production build: home, all three lessons, every Engineer View tab, 320–1440 px and 200 % zoom | no layout defects found |
+| Visual audit | `scripts/ui-audit.ts` against the production build: home, the welcome state, all three lessons, 320–1440 px and 200 % zoom | no layout defects found |
 | Fresh install | `npm ci && npm run build && npm start` in a clean copy without `node_modules` or `.next` | `/api/health` responds; lesson starts |
 | Logs contain no student text | grep of the server log after the e2e run | 0 matches for the inputs the tests typed |
 | Mobile layout | e2e at 390 px; manual check at 320 px | no horizontal scroll |
-| Contrast | computed WCAG ratios for the text colour tokens against every light background colour in `globals.css` | secondary text, placeholder and not-yet-spoken words ≥ 4.5:1 (AA) after the final pass; not checked with an automated page-wide tool |
+| Contrast | computed WCAG ratios for the text colour tokens against every light background colour in `globals.css` | re-computed for the v5 palette: body, secondary text, subject labels, status colours and buttons ≥ 4.5:1 (AA) on their backgrounds (disabled controls excepted); not checked with an automated page-wide tool |
 | Reduced motion, keyboard-only use | e2e | animations off under `prefers-reduced-motion`; start, answer and open a note with the keyboard only |
 
 Voice (mocked browser APIs): start listening, partial vs final transcript, Done submits exactly once, ✕ and Esc never submit, permission denied, no microphone, unsupported browser, browser-ended sessions (silent resume capped at two, then a recovery state), duplicate result events, rapid start/cancel, spoken help requests ("I'm stuck", "explain it another way", challenging the tutor, "why"), the tutor never being recorded, nothing playing on load / reload / navigation, the intro spoken exactly once, Stop and Replay, no idle follow-ups, Read without sound, keyboard-only voice, phone layout while listening.
 
-The e2e journey covers: start; an incorrect answer; explaining the mistake; a valid hint with highlighted terms; the *I'm stuck* quick reply; challenging the tutor; folding and opening notes; completing the guided problem; expanding the finished problem; the scratch pad; reload and resume; two independent checks; transcript and progress drawers (close button and Escape); the engineer console in a new tab (per-turn decision, every evidence tab, policy tab, eval run, inspector, link back); Restart; Delete my data; Cancel during a pending turn; no uncaught page errors.
+The e2e journey covers: start; an incorrect answer; explaining the mistake; a valid hint with highlighted terms; the *I'm stuck* quick reply; challenging the tutor; folding and opening notes; completing the guided problem; expanding the finished problem; the scratch pad; reload and resume; two independent checks; transcript and progress drawers (close button and Escape); Restart; Delete my data; Cancel during a pending turn; no uncaught page errors.
 
 ## Not verified
 
 ### Policy C (LLM teacher) has not been run against a real model
 
-No provider credentials were available in this environment. Policy C is reported as **not run** in the CLI and the console. No results were simulated.
+No provider credentials were available in this environment. Policy C is reported as **not run** by `npm run eval`. No results were simulated.
 
 What *is* tested: the LLM control logic with fake providers (choosing a non-default move, rejecting invented candidates, guard rejection → repair retry → fallback, timeouts, transport errors) and real HTTP round-trips through the Anthropic SDK and the OpenAI-compatible client against **local** fake servers.
 
@@ -50,7 +50,6 @@ What is *unknown* until C runs: how well a real model reads unusual student lang
    npm run eval              # A, B and C; writes eval-results.json
    npm run eval -- --only C  # C only
    ```
-   Or start the app (`npm run dev`), open `/console` → **Eval lab** → **Run comparison**. In production, `/api/eval` additionally needs `EVAL_TOKEN` set on the server and sent as the `x-eval-token` header.
 3. Check `/api/health` reports `"teacher": {"mode": "llm", …}`, and the student header shows **LLM · provider:model**.
 4. Record the C row (scenarios, leaks, guard rejections, p50/p95 latency, tokens, cost) in the README's evaluation table, and read a sample of transcripts before trusting the numbers.
 
@@ -93,3 +92,29 @@ Expect 50 scenarios × several model calls each. With a small model this is cent
 - **Production hardening**: rate limiting is in-memory per instance; without `SESSION_SECRET` a fixed dev key signs sessions (`/api/health` says `degraded`). No server-side persistence, auth, moderation of free text, or escalation path to an adult.
 - **Child-data compliance** (DPDP Act, COPPA, GDPR-K) has not been reviewed.
 - **Accessibility**: automated contrast, keyboard and reduced-motion checks only; no screen-reader or user testing.
+
+### Learning evidence (v5)
+
+- The end-of-lesson "What I saw" table is computed only from what the session recorded: lines written, lines that weren't equivalent, help turns (hint rungs, worked steps, explanations — a targeted question or a computed check is not counted as a hint), and whether the first attempt on each fresh problem was right without asking for help first. It describes one session; it is not a validated assessment and says nothing about retention. A delayed retest is not implemented.
+- The first independent problem is always 4x + 3 = 19 (so the demo is repeatable); the second is generated from the session seed.
+
+### Voice
+
+- Voice uses the browser's Web Speech API only: input works in Chrome and Edge (in Chrome, audio goes to Google's speech service); read-aloud uses whatever voice the device has. It is turn-based (tap, speak, Done), not streaming, and there's no barge-in while the tutor speaks other than tapping the mic or Stop. Board highlights change per turn, not per spoken word. No paid voice API is integrated. Voice behaviour is tested with mocked browser speech APIs; real microphones and accents have not been tested in automation.
+
+### Teaching behaviour (v6)
+
+- **All wording in the live demo is templated.** The strategy ladder, feelings replies and anti-repetition are deterministic rules with several hand-written wordings each; they are not model reasoning. A long session still draws on a finite set of lines — the anti-repetition check guarantees no exact repeat on a problem, not endless variety.
+- **Feelings are read by a short list of phrase rules** ("hate algebra", "boring", "lol", "I'm so bad at maths"…). Other ways of saying it fall through to a clarifying question. There is no detection of distress beyond these phrases and no escalation to an adult — needed before real children use it.
+- **Humour** is a few fixed lines, used only for dislike, boredom and laughter, mostly the first time. Whether children find them funny (or annoying) hasn't been tested.
+- **WAIT** happens only on an explicit signal ("let me think", "give me a sec"). The tutor never sends unprompted follow-ups, so "not interrupting while they compose" is true by construction — there is no idle timer to tune.
+- **The balance picture** only draws equations it can draw honestly (whole numbers, no subtraction on the x side, right side ≤ 40); for others the tutor names the move in words instead.
+- **Move choices** appear only on the guided problem after the student hesitates or slips, so the independent problems stay unaided. Picking a move still requires the student to write the resulting line.
+- **Physics/geometry sub-questions** ("which push is stronger?", "what do the two known angles add up to?") exist for the net-force and two-known-angle questions; the other question types get the strategy ladder in words and pictures without a tappable sub-question.
+- **Problem generation changed** (independent = same relationship with new numbers; transfer = a different relationship), so seeds from before v6 produce different second and third questions.
+
+### Voice (v6.1: Google Chirp 3 HD)
+
+- The Google voice uses the official client library with Application Default Credentials locally and Workload Identity Federation on Vercel. In this repository's test environment there are no Google credentials and outbound calls to Google are blocked, so **real Sulafat audio has not been produced here**. What was verified: the library loads in the production build, missing credentials give `502 upstream_auth` without crashing the server, and 27 tests cover the route and client behaviour against a fake client. Run `npm run tts:smoke` with your ADC to check real audio.
+- Usage caps (per-request characters, daily characters, per-client rate) are in memory and per server instance. For a hard ceiling, set a Text-to-Speech quota and a billing budget in Google Cloud.
+- No streaming, no interrupting by just speaking (tap the mic or Stop), no word-level highlight sync.

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { maxModelCallsFromEnv, providerInfo } from "@/engine/llm/factory";
 import { signingMode } from "@/lib/server/session-token";
+import { ttsPublicInfo } from "@/lib/server/tts";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,8 @@ export async function GET() {
       rateLimiting: "in-memory, per instance",
       // Model limits (shown in the Engineer View). Only meaningful when a provider is configured.
       limits: { timeoutMs: Number(process.env.LLM_TIMEOUT_MS) || 8000, maxModelCallsPerSession: maxModelCallsFromEnv(), retries: 1 },
+      // Read-aloud voice: Google Chirp 3 HD when GOOGLE_TTS_ENABLED=true (auth mode and limits only — never credentials).
+      voice: ttsPublicInfo(),
     },
     { headers: { "cache-control": "no-store" } },
   );

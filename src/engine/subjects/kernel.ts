@@ -12,6 +12,9 @@
  * no general reasoning engine — text a subject can't check is answered with a clarifying question.
  */
 import { DANGLING, FRUSTRATED, REPEAT, matchPhrase } from "../intent";
+import { affectLine, readAffect } from "../affect";
+import { answerLead, confusionLead } from "../leads";
+import type { Strategy, TeachingMemory, VisualCue } from "../types";
 import { DeterministicTeacher, type TeachingModel } from "../llm/teacher";
 import type { Decision, LlmCall, Message, Phase, StudentEvent, TurnTrace } from "../types";
 import { arithmeticClaims, normalizeText, numbersIn } from "./text";
@@ -45,6 +48,23 @@ export interface SubjectModule {
   nextIntro(next: SubjectProblem, index: number): string;
   /** What the tutor can check for this problem, for the "I can only check…" reply. */
   checkable(p: SubjectProblem): string;
+  /**
+   * A different way in, for a student who is still stuck: "simplify" (a smaller question), "analogy",
+   * "visual" (use the whiteboard picture, often with something to tap) or "worked_part" (the tutor does the
+   * first part, the student the rest). Null = this subject has nothing for that strategy on this problem.
+   * Never states the answer (the kernel's leak guard checks anyway).
+   */
+  strategy?(p: SubjectProblem, s: Strategy): { text: string; hintLevel: 1 | 2 | 3; visual?: VisualCue; awaiting?: string } | null;
+  /** A bare "why?": the reason behind the tutor's latest move, read from what it just said. Null = no clear move to explain. */
+  whyLast?(p: SubjectProblem, lastTutorText: string): string | null;
+  /** Read an answer against the small sub-question the tutor asked ("which push is stronger?"). Null = not a sub-answer. */
+  subAnswer?(p: SubjectProblem, awaiting: string, r: SubjectReading, cx: RespondContext): SubjectMove | null;
+}
+
+const LADDER: Strategy[] = ["simplify", "analogy", "visual", "worked_part"];
+
+export function subjectTeaching(state: SubjectState, mod: Pick<SubjectModule, "objective">): TeachingMemory {
+  return (state.teaching ??= { objective: mod.objective, confusion: 0, strategies: [], hintHistory: [], answerRequests: 0, affect: 0, offTopic: 0 });
 }
 
 export interface RespondContext {
@@ -90,7 +110,12 @@ export function createSubjectSession(mod: SubjectModule, o: { sessionId: string;
     repeats: 0,
     records: problems.map((p) => ({ problemId: p.id, solved: false, alone: false, hints: 0, attempts: 0, revealed: false })),
     transcript: [],
+    teaching: { objective: `${stageName(problems[0])}: ${mod.objective}`, confusion: 0, strategies: [], hintHistory: [], answerRequests: 0, affect: 0, offTopic: 0 },
   };
+}
+
+export function stageName(p: SubjectProblem) {
+  return p.stage === "transfer" ? "Transfer" : p.stage === "independent" ? "Independent practice" : "Guided practice";
 }
 
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x));
@@ -110,6 +135,10 @@ export function readMessage(mod: SubjectModule, raw: string, p: SubjectProblem):
   // Requests about the explanation itself come first: "explain it another way" is not "say it again".
   if (phrase && (phrase.id === "P_NO_ANSWER" || phrase.id === "P_REPHRASE")) return { ...base, kind: phrase.id === "P_NO_ANSWER" ? "no_answer" : "rephrase", evidence: [phrase.id], confidence: 0.9 };
   if (REPEAT.test(t)) return { ...base, kind: "repeat", evidence: ["P_REPEAT"], confidence: 0.9 };
+  if (phrase?.id === "P_THINKING") return { ...base, kind: "thinking", evidence: [phrase.id], confidence: 0.9 };
+  const affect = readAffect(t) ?? undefined;
+  if (affect) base.affect = affect;
+  if (phrase?.id === "P_ANSWER") base.asksAnswer = true;
   const own = mod.read(t, p);
   if (own?.kind) return { ...base, ...own, concepts: own.concepts ?? [], claims: own.claims ?? base.claims, evidence: own.evidence ?? [], confidence: own.confidence ?? 0.85 };
   if (phrase) {
@@ -119,6 +148,9 @@ export function readMessage(mod: SubjectModule, raw: string, p: SubjectProblem):
   }
   const words = t.split(/\s+/).length;
   if (words <= 6 && DANGLING.test(t)) return { ...base, kind: "incomplete", evidence: ["stops mid-sentence", raw.trim().replace(/[.…\s-]+$/, "")] };
+  // Worry and frustration are a student struggling: help, with the feeling acknowledged first.
+  if (affect === "worried" || affect === "frustrated") return { ...base, kind: "help", evidence: [`AFFECT_${affect}`], confidence: 0.85 };
+  if (affect) return { ...base, kind: "affect", evidence: [`AFFECT_${affect}`], confidence: 0.85 };
   if (base.frustrated) return { ...base, kind: "help", evidence: ["frustrated"] };
   return { ...base, kind: words <= 4 && !base.question ? "unclear" : "off_topic", evidence: ["no rule matched"], confidence: 0.4 };
 }
@@ -137,6 +169,7 @@ export async function stepSubject(mod: SubjectModule, prev: SubjectState, event:
   const before = snapshot(state);
   const llmCalls: LlmCall[] = [];
   const errors: string[] = [];
+  const notes: string[] = [];
   const overBudget = deps.teacher.mode === "llm" && deps.maxModelCalls != null && (state.modelCalls ?? 0) >= deps.maxModelCalls;
   const teacher: TeachingModel = overBudget ? new DeterministicTeacher() : deps.teacher;
   if (overBudget) errors.push(`Model-call budget for this session (${deps.maxModelCalls}) reached; this turn ran deterministically.`);
@@ -184,9 +217,14 @@ export async function stepSubject(mod: SubjectModule, prev: SubjectState, event:
     } else {
       const repeat = reading.kind === "answer" && !!state.lastAnswer && state.lastAnswer.value === reading.value && state.lastAnswer.direction === reading.direction && state.lastAnswer.outcome === reading.outcome;
       context.repeat = repeat;
-      if (reading.kind === "answer" || reading.kind === "concept_claim") {
+      const sub = state.awaiting && reading.kind === "answer" && mod.subAnswer ? mod.subAnswer(p, state.awaiting.kind, reading, { state, repeat, next: nextText(mod, state, rec) }) : null;
+      if (sub) {
+        // The student answered the small question the tutor asked (e.g. tapped the stronger arrow).
+        move = sub;
+        context.awaiting = state.awaiting!.kind;
+      } else if (reading.kind === "answer" || reading.kind === "concept_claim") {
         check = mod.verify(reading, p);
-        const next = state.current + 1 < state.problems.length ? mod.nextIntro(state.problems[state.current + 1], state.current + 1) : finalText(state, rec);
+        const next = nextText(mod, state, rec);
         move = mod.respond(p, reading, check, { state, repeat, next });
         // A wrong answer given again after the tutor already responded: move one rung up instead of repeating.
         // A third wrong answer that no modelled mistake explains: stop asking how, and move up the ladder.
@@ -199,6 +237,20 @@ export async function stepSubject(mod: SubjectModule, prev: SubjectState, event:
       } else {
         move = requestMove(mod, state, p, reading);
       }
+    }
+  }
+
+  // Never say the same thing twice on one problem (unless asked to repeat): another wording of the same rung.
+  if (move.rule !== "S_REPEAT" && event.type === "text") {
+    const said = new Set(state.transcript.filter((m) => m.role === "tutor" && state.turn - m.turn <= 12).map((m) => m.text));
+    if (said.has(move.text)) {
+      const lvl = Math.max(1, Math.min(3, move.hintLevel)) as 1 | 2 | 3;
+      const alt = [1, 2, 3].map((k) => mod.hint(p, lvl, state.explainVariant + k)).find((x) => !said.has(x));
+      if (alt && move.action !== "ASSESS" && !move.solved) {
+        notes.push(`Avoided repeating an earlier reply (${move.rule}); used another explanation at hint level ${lvl}.`);
+        move = { ...move, text: move.text.endsWith("?") ? alt : `${alt}`, rule: move.rule, reason: `${move.reason} (Reworded: the first wording had already been said on this problem.)` };
+        state.explainVariant += 1;
+      } else notes.push(`Repeated an earlier reply (${move.rule}): no alternative wording was available.`);
     }
   }
 
@@ -226,6 +278,19 @@ export async function stepSubject(mod: SubjectModule, prev: SubjectState, event:
     rec.solved = true;
     rec.alone = p.role === "check" && rec.hints === 0 && !rec.revealed;
   }
+  const tm = subjectTeaching(state, mod);
+  if (reading && (reading.kind === "help" || reading.kind === "confused")) tm.confusion += 1;
+  if (move.solved || (check && check.verdict !== "incorrect" && check.verdict !== "not_checkable") || (move.rule.endsWith("_SUB_RIGHT"))) tm.confusion = 0;
+  if (reading?.asksAnswer) tm.answerRequests += 1;
+  if (reading?.affect) tm.affect += 1;
+  if (reading?.kind === "off_topic") tm.offTopic += 1;
+  if (move.solved && reading) tm.lastSuccess = event.type === "text" ? event.text.slice(0, 60) : undefined;
+  if (move.strategy && tm.strategies.at(-1) !== move.strategy) tm.strategies.push(move.strategy);
+  if (move.assistive) {
+    tm.hintHistory.push({ turn: state.turn, problemId: p.id, rule: move.rule, strategy: move.strategy });
+    if (tm.hintHistory.length > 40) tm.hintHistory.shift();
+  }
+  state.awaiting = move.awaiting ? { kind: move.awaiting, turn: state.turn } : undefined;
   if (move.advance) {
     state.current += 1;
     state.attempts = 0;
@@ -236,12 +301,15 @@ export async function stepSubject(mod: SubjectModule, prev: SubjectState, event:
     state.lastAnswer = undefined;
     state.repeats = 0;
     state.phase = state.current >= state.problems.length ? "COMPLETE" : "TRANSFER";
+    const nextP = state.problems[state.current];
+    Object.assign(tm, { objective: nextP ? `${stageName(nextP)}: ${mod.objective}` : tm.objective, confusion: 0, strategies: [], answerRequests: 0, lastSuccess: undefined });
+    state.awaiting = undefined;
   }
   state.lastTutorText = move.text;
   const q = lastQuestionOf(move.text);
   if (q && !["S_INCOMPLETE", "S_CLARIFY", "S_REDIRECT", "S_REPEAT", "G_WHICH_NUMBER", "P_WHICH_NUMBER"].includes(move.rule)) state.lastQuestion = q;
   state.modelCalls = (state.modelCalls ?? 0) + llmCalls.filter((c) => c.kind === "model").length;
-  const msg: Message = { role: "tutor", text: move.text, action: move.action, turn: state.turn, rule: move.rule, hintLevel: move.hintLevel, stage: move.stage };
+  const msg: Message = { role: "tutor", text: move.text, action: move.action, turn: state.turn, rule: move.rule, hintLevel: move.hintLevel, stage: move.stage, ...(move.visual ? { visual: move.visual } : {}), ...(move.awaiting ? { awaiting: move.awaiting } : {}) };
   state.transcript.push(msg);
 
   const decision: Decision = {
@@ -257,6 +325,8 @@ export async function stepSubject(mod: SubjectModule, prev: SubjectState, event:
     allowedEquations: [],
     assistive: move.assistive,
     stage: move.stage,
+    strategy: move.strategy,
+    visual: move.visual,
     template: "op",
     templateVars: { opText: move.text },
   };
@@ -283,8 +353,14 @@ export async function stepSubject(mod: SubjectModule, prev: SubjectState, event:
     utterance: move.text,
     totalLatencyMs: Math.round(performance.now() - t0),
     errors,
+    ...(notes.length ? { notes } : {}),
+    teaching: { confusion: tm.confusion, strategies: [...tm.strategies], answerRequests: tm.answerRequests, lastSuccess: tm.lastSuccess, objective: tm.objective, awaiting: state.awaiting?.kind },
   };
   return { state, utterance: move.text, trace };
+}
+
+function nextText(mod: SubjectModule, state: SubjectState, rec: ProblemRecord) {
+  return state.current + 1 < state.problems.length ? mod.nextIntro(state.problems[state.current + 1], state.current + 1) : finalText(state, rec);
 }
 
 function startMove(mod: SubjectModule, p: SubjectProblem): SubjectMove {
@@ -302,18 +378,66 @@ function describeAnswer(r: SubjectReading) {
 }
 
 /** The shared hint ladder: NOTICE → THINK → TRY, a worked solution only after real effort. */
-function ladder(mod: SubjectModule, state: SubjectState, p: SubjectProblem, rule: string, reason: string, help: boolean): SubjectMove {
-  const effort = state.attempts >= 2 || state.helpRequests >= 3;
+function ladder(mod: SubjectModule, state: SubjectState, p: SubjectProblem, rule: string, reason: string, help: boolean, exhausted = false): SubjectMove {
+  const effort = state.attempts >= 2 || state.helpRequests >= 3 || exhausted;
   if (state.hintLevel >= 3 && effort && !state.noReveal) {
     const nextP = state.problems[state.current + 1];
     const tail = nextP ? ` ${mod.nextIntro(nextP, state.current + 1)}` : ` ${finalText(state, state.records[state.current])}`;
-    return { rule: `${rule}_REVEAL`, action: "EXPLAIN", reason: `${reason} After real effort (${state.attempts} attempts, ${state.helpRequests} help requests), show the worked solution, then move on to a fresh problem.`, text: `${mod.reveal(p)}${tail}`, hintLevel: 4, revealAllowed: true, assistive: true, advance: true, revealed: true, solved: true, help };
+    return { strategy: "worked", rule: `${rule}_REVEAL`, action: "EXPLAIN", reason: `${reason} After real effort (${state.attempts} attempts, ${state.helpRequests} help requests), show the worked solution, then move on to a fresh problem.`, text: `${mod.reveal(p)}${tail}`, hintLevel: 4, revealAllowed: true, assistive: true, advance: true, revealed: true, solved: true, help };
   }
   const level = Math.min(3, state.hintLevel + 1) as 1 | 2 | 3;
   const atCap = state.hintLevel >= 3;
   if (atCap) state.explainVariant += 1;
   const stage = level === 1 ? "NOTICE" : level === 2 ? "THINK" : "TRY";
   return { rule: `${rule}_L${level}`, action: "HINT", stage, reason: atCap ? `${reason} Already at the top of the ladder${state.noReveal ? " and the student asked not to be shown the answer" : " without enough effort for a worked solution"}: the same step, explained a new way.` : `${reason} Move one rung: ${stage}.`, text: mod.hint(p, level, state.explainVariant), hintLevel: level, revealAllowed: false, assistive: true, help };
+}
+
+/**
+ * Repeated confusion: each "I don't know" on the same problem gets a different approach, in order —
+ * a simpler question, an analogy, the picture (often with something to tap), then the tutor does the first
+ * part — skipping any the subject doesn't offer for this problem or that were already tried. After all of
+ * them, the shared ladder decides (a worked solution only after real effort).
+ */
+function strategyLadder(mod: SubjectModule, state: SubjectState, p: SubjectProblem, r: SubjectReading): SubjectMove {
+  const tm = subjectTeaching(state, mod);
+  const conf = tm.confusion + 1;
+  const help = true;
+  const feeling = r.affect === "worried" || r.affect === "frustrated" ? affectLine(r.affect, mod.id, tm.affect) : "";
+  const asked = r.asksAnswer ? answerLead(tm.answerRequests) : "";
+  const exhausted = conf >= 5 && state.hintLevel >= 3;
+  if (mod.strategy && !exhausted) {
+    for (const s of LADDER) {
+      if (tm.strategies.includes(s)) continue;
+      const got = mod.strategy(p, s);
+      if (!got) continue;
+      const byStrategy: Record<string, string> = {
+        simplify: conf === 1 ? "No worries — let's make it simpler." : "Let's make it simpler.",
+        analogy: confusionLead(2, false),
+        visual: conf >= 3 ? confusionLead(3, true) : "Okay, let's try the picture instead.",
+        worked_part: confusionLead(4, false),
+      };
+      const lead = feeling || asked || byStrategy[s];
+      const action = s === "visual" ? "VISUALIZE" : s === "worked_part" ? "EXPLAIN" : conf >= 2 ? "RETEACH" : "HINT";
+      const level = Math.max(state.hintLevel, got.hintLevel) as 1 | 2 | 3;
+      return {
+        rule: `S_${r.kind === "confused" ? "CONFUSED" : "HELP"}_${s.toUpperCase()}`,
+        action,
+        stage: s === "simplify" ? "NOTICE" : s === "worked_part" ? "TRY" : "THINK",
+        reason: `Stuck ${conf} time${conf === 1 ? "" : "s"} on this problem${tm.strategies.length ? ` after: ${tm.strategies.join(", ")}` : ""}. Next approach: ${s}${got.visual ? ` (whiteboard: ${got.visual})` : ""}.`,
+        text: `${lead ? `${lead} ` : ""}${got.text}`,
+        hintLevel: level,
+        revealAllowed: false,
+        assistive: true,
+        help,
+        strategy: s,
+        visual: got.visual,
+        awaiting: got.awaiting,
+      };
+    }
+  }
+  const m = ladder(mod, state, p, r.kind === "confused" ? "S_CONFUSED" : "S_HELP", "Every other approach has been tried on this problem.", help, exhausted);
+  const lead = m.revealed ? "Okay, let's go through it together." : feeling || asked;
+  return lead ? { ...m, text: `${lead} ${m.text}` } : m;
 }
 
 /** The question part of a problem prompt ("What is the size of the third angle?"). */
@@ -326,13 +450,18 @@ function requestMove(mod: SubjectModule, state: SubjectState, p: SubjectProblem,
   const lvl = state.hintLevel;
   switch (r.kind) {
     case "help":
-      return ladder(mod, state, p, "S_HELP", "The student asked for help.", true);
     case "confused":
-      return ladder(mod, state, p, "S_CONFUSED", "The student is confused: a smaller step.", true);
+      return strategyLadder(mod, state, p, r);
+    case "thinking":
+      return { rule: "S_WAIT_ON_REQUEST", action: "WAIT", reason: "The student said they're thinking: an explicit signal to wait. No new information, no new question.", text: "Take your time. Send your answer whenever you're ready, and I'll check it.", hintLevel: lvl, revealAllowed: false, assistive: false };
+    case "affect": {
+      const tm = subjectTeaching(state, mod);
+      return { rule: `S_ENCOURAGE_${r.affect!.toUpperCase()}`, action: "ENCOURAGE", reason: `The student said how they feel (${r.affect}), not something about the question. Acknowledge it briefly — humour only about the subject — then hand the question back.`, text: `${affectLine(r.affect!, mod.id, tm.affect)} ${state.lastQuestion || q}`, hintLevel: lvl, revealAllowed: false, assistive: false, strategy: "encourage" };
+    }
     case "rephrase": {
       state.explainVariant += 1;
       const level = Math.max(1, Math.min(3, lvl)) as 1 | 2 | 3;
-      return { rule: "S_REPHRASE", action: "HINT", stage: level === 1 ? "NOTICE" : level === 2 ? "THINK" : "TRY", reason: "Asked for another explanation: same amount of help, different words.", text: mod.hint(p, level, state.explainVariant), hintLevel: level, revealAllowed: false, assistive: true, help: lvl === 0 };
+      return { rule: "S_REPHRASE", action: "RETEACH", stage: level === 1 ? "NOTICE" : level === 2 ? "THINK" : "TRY", reason: "Asked for another explanation: same amount of help, different words.", text: mod.hint(p, level, state.explainVariant), hintLevel: level, revealAllowed: false, assistive: true, help: lvl === 0 };
     }
     case "example":
       return { rule: "S_EXAMPLE", action: "EXPLAIN", stage: "THINK", reason: "A worked example with different numbers teaches the idea without doing this problem.", text: `${mod.example(p)} Now yours: ${q}`, hintLevel: Math.max(1, lvl), revealAllowed: false, assistive: true, help: true };
@@ -348,14 +477,23 @@ function requestMove(mod: SubjectModule, state: SubjectState, p: SubjectProblem,
       return { rule: "S_ACK", action: "ASK", stage: "TRY", reason: "Acknowledged: hand the thinking back.", text: `Go ahead — ${q.charAt(0).toLowerCase()}${q.slice(1)}`, hintLevel: lvl, revealAllowed: false, assistive: false };
     case "why":
     case "concept_question":
+      if (r.kind === "why" && !r.topic) {
+        // A bare "why?" is about the tutor's latest step, not the topic in general.
+        const about = mod.whyLast?.(p, state.lastTutorText);
+        if (about) return { rule: "S_WHY_LAST_STEP", action: "EXPLAIN", reason: "A bare \"why?\" is about the tutor's latest move: explain the reason for that move, briefly, never the answer.", text: `${about} ${state.lastQuestion || q}`, hintLevel: lvl, revealAllowed: false, assistive: true };
+      }
       return { rule: r.kind === "why" ? "S_WHY" : `S_CONCEPT_${(r.topic ?? "general").toUpperCase()}`, action: "EXPLAIN", reason: "A question about the idea deserves a direct answer about the idea — never the answer to this problem.", text: `${mod.explain(p, r.topic)} ${q}`, hintLevel: lvl, revealAllowed: false, assistive: true };
     case "incomplete":
-      return { rule: "S_INCOMPLETE", action: "ASK", reason: "The message stops mid-sentence; ask them to finish rather than guess.", text: `I caught “${(r.evidence[1] ?? "").trim() || "the start of that"}…” and then it stopped. What were you going to say?`, hintLevel: lvl, revealAllowed: false, assistive: false };
-    case "off_topic":
-      return { rule: "S_REDIRECT", action: "ASK", reason: "Not about the lesson (or not something the rules can read). Say what can be checked and return to the question.", text: `That's outside what I can check here. ${cap(mod.checkable(p))}. ${q}`, hintLevel: lvl, revealAllowed: false, assistive: false };
+      return { rule: "S_INCOMPLETE", action: "CLARIFY", reason: "The message stops mid-sentence; ask them to finish rather than guess.", text: `I caught “${(r.evidence[1] ?? "").trim() || "the start of that"}…” and then it stopped. What were you going to say?`, hintLevel: lvl, revealAllowed: false, assistive: false };
+    case "off_topic": {
+      const n = subjectTeaching(state, mod).offTopic;
+      const opener = ["Good question for another day — I'm an AI tutor, and this lesson is all I can help with.", "Let's save that one for later.", "That's outside what I can check here."][Math.min(n, 2)];
+      // An unrelated question gets a short redirect; a statement we can't read also says what we can check.
+      return { rule: "S_REDIRECT", action: "ASK", reason: "Not about the lesson (or not something the rules can read). Return to the question; for an unreadable statement, say what can be checked.", text: r.question ? `${opener} ${q}` : `${opener} ${cap(mod.checkable(p))}. ${q}`, hintLevel: lvl, revealAllowed: false, assistive: false };
+    }
     case "unclear":
     default:
-      return { rule: "S_CLARIFY", action: "ASK", reason: "Unclear: ask rather than guess. States what the tutor can check.", text: `I'm not sure what you mean. ${cap(mod.checkable(p))}. If you'd like a hint, just ask. ${q}`, hintLevel: lvl, revealAllowed: false, assistive: false };
+      return { rule: "S_CLARIFY", action: "CLARIFY", reason: "Unclear: ask rather than guess. States what the tutor can check.", text: `I'm not sure what you mean. ${cap(mod.checkable(p))}. If you'd like a hint, just ask. ${q}`, hintLevel: lvl, revealAllowed: false, assistive: false };
   }
 }
 

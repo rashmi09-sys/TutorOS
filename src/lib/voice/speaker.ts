@@ -17,7 +17,15 @@
  *     runs a watchdog that finishes a turn if the browser goes quiet without reporting it.
  *  - Stable utterance ids: speaking the id that is already playing is a no-op (no restart).
  *  - A cancelled turn never reports "finished"; events from older turns are ignored.
+ *
+ * Optional cloud voice (off by default; see docs/VOICE.md): after `enableCloud()` / `enableCloudVoice()`,
+ * a turn is fetched as MP3 from /api/tts and played through one audio element, with the same lifecycle
+ * (stable ids, stop() aborts the fetch and pauses, a cancelled turn never reports finished). Any failure
+ * before the audio starts falls back to speechSynthesis for that turn; after 2 consecutive failures the
+ * cloud voice is off for the rest of the page session.
  */
+
+import { fetchCloudAudio, resolveCloudVoice, type AudioLike, type CloudVoiceOptions, type HealthVoice, type ResolvedCloudVoice } from "./cloud-voice";
 
 export interface UtterLike {
   text: string;
@@ -83,6 +91,12 @@ export class Speaker {
   private queued: UtterLike[] = [];
   private watchdog: unknown = null;
   private listeners = new Set<(s: SpeechState) => void>();
+  /** Optional cloud voice (null = browser speechSynthesis only, the default). */
+  private cloud: ResolvedCloudVoice | null = null;
+  private cloudFailures = 0;
+  private cloudOff = false;
+  private cloudTurn: { cleanup: () => void } | null = null;
+  private browserVoiceLabel: string | null = null;
 
   constructor(
     private synth: SynthLike | null,
@@ -94,7 +108,29 @@ export class Speaker {
   }
 
   get supported() {
-    return !!this.synth;
+    return !!this.synth || this.cloudEnabled;
+  }
+
+  /** True while the cloud voice will be tried for the next turn. */
+  get cloudEnabled() {
+    return !!this.cloud && !this.cloudOff;
+  }
+
+  /**
+   * Turn on the cloud voice for this controller (deps are injectable for tests; defaults are the browser's
+   * fetch / Audio / object URLs). Returns false if it cannot run here or was switched off for this session.
+   */
+  enableCloud(opts: CloudVoiceOptions = {}): boolean {
+    const cv = resolveCloudVoice(opts);
+    if (!cv || this.cloudOff) return false;
+    this.cloud = cv;
+    if (this.state.status === "unsupported") this.set({ status: "idle" });
+    return true;
+  }
+
+  /** Back to the browser voice only (takes effect from the next turn). */
+  disableCloud() {
+    this.cloud = null;
   }
 
   /** True while a turn is being prepared or spoken. */
@@ -121,15 +157,17 @@ export class Speaker {
     this.halt(false);
     const gen = ++this.gen;
     this.handlers = h;
-    if (!this.synth || !text.trim()) {
+    const cloud = text.trim() ? this.cloudFor(text) : null;
+    if ((!this.synth && !cloud) || !text.trim()) {
       h.onDone?.(false);
       return gen;
     }
     this.set({ status: "preparing", id });
-    void this.ensureVoices().then(() => {
-      if (gen !== this.gen) return; // stopped or replaced while voices loaded
-      this.enqueue(gen, text, h);
-    });
+    if (cloud) this.speakCloud(gen, cloud, text, h);
+    else {
+      if (this.cloud) this.set({ voice: this.browserVoiceLabel }); // e.g. a turn too long for the cloud voice
+      this.speakBrowser(gen, text, h);
+    }
     return gen;
   }
 
@@ -139,6 +177,136 @@ export class Speaker {
   }
 
   /* ------------------------------------------------------------------ */
+
+  private speakBrowser(gen: number, text: string, h: SpeakHandlers) {
+    if (!this.synth) {
+      // Cloud-only controller whose cloud turn failed: the text is on the page.
+      this.handlers = null;
+      this.set({ status: "idle", id: null });
+      h.onDone?.(false);
+      return;
+    }
+    void this.ensureVoices().then(() => {
+      if (gen !== this.gen) return; // stopped or replaced while voices loaded
+      this.enqueue(gen, text, h);
+    });
+  }
+
+  /** The speakable text to send to the cloud voice, or null to use the browser voice for this turn. */
+  private cloudFor(text: string): string | null {
+    if (!this.cloud || this.cloudOff) return null;
+    const s = speakable(text);
+    return s && s.length <= this.cloud.maxChars ? s : null;
+  }
+
+  private noteCloudFailure() {
+    this.cloudFailures++;
+    if (this.cloud && this.cloudFailures >= this.cloud.maxFailures) this.cloudOff = true; // rest of the page session
+  }
+
+  /**
+   * One cloud turn: fetch MP3 (abortable) → play through one audio element.
+   * Failure before playback starts → this turn falls back to speechSynthesis. Failure after it started
+   * → the turn ends (done(false)) rather than restarting from the top in another voice.
+   */
+  private speakCloud(gen: number, spoken: string, text: string, h: SpeakHandlers) {
+    const cv = this.cloud!;
+    const ac = new AbortController();
+    let audio: AudioLike | null = null;
+    let url: string | null = null;
+    let startTimer: unknown = null;
+    let watchdog: unknown = null;
+    let started = false;
+    let finished = false;
+
+    const cleanup = () => {
+      if (startTimer != null) this.timers.clear(startTimer);
+      if (watchdog != null) this.timers.clear(watchdog);
+      startTimer = watchdog = null;
+      ac.abort();
+      if (audio) {
+        audio.onplaying = audio.onended = audio.onerror = null;
+        try {
+          audio.pause();
+          audio.removeAttribute?.("src");
+          audio.load?.();
+        } catch {
+          /* already gone */
+        }
+      }
+      if (url) cv.revokeObjectURL(url);
+      audio = null;
+      url = null;
+      if (this.cloudTurn === turn) this.cloudTurn = null;
+    };
+    const turn = { cleanup };
+    this.cloudTurn = turn;
+
+    const finish = (completed: boolean) => {
+      if (finished || gen !== this.gen) return;
+      finished = true;
+      cleanup();
+      if (completed) {
+        this.cloudFailures = 0;
+        h.onProgress?.(text.length);
+      }
+      this.handlers = null;
+      this.set({ status: "idle", id: null });
+      h.onDone?.(completed);
+    };
+    const fail = () => {
+      if (finished || gen !== this.gen) return; // stopped/replaced: not a failure of the voice
+      finished = true;
+      cleanup();
+      this.noteCloudFailure();
+      if (started) {
+        this.handlers = null;
+        this.set({ status: "idle", id: null });
+        h.onDone?.(false);
+        return;
+      }
+      this.set({ voice: this.browserVoiceLabel });
+      this.speakBrowser(gen, text, h);
+    };
+
+    // Covers a slow /api/tts AND audio that never starts (stalled decode, a play() that never settles).
+    startTimer = this.timers.set(fail, cv.timeoutMs);
+
+    const pace = h.rate != null ? Math.min(2, Math.max(0.25, Math.round((h.rate / 0.92) * 100) / 100)) : undefined;
+    fetchCloudAudio(cv, spoken, pace, ac.signal).then(
+      (blob) => {
+        if (finished || gen !== this.gen) return;
+        try {
+          url = cv.createObjectURL(blob);
+          const a = cv.makeAudio();
+          audio = a;
+          a.onplaying = () => {
+            if (finished || gen !== this.gen || started) return;
+            started = true;
+            if (startTimer != null) this.timers.clear(startTimer);
+            startTimer = null;
+            this.set({ status: "speaking", voice: cv.label });
+            h.onStart?.();
+            h.onProgress?.(0);
+            const tick = () => {
+              if (finished || gen !== this.gen) return;
+              if (a.ended) return finish(true); // `ended` event lost
+              watchdog = this.timers.set(tick, 1000);
+            };
+            watchdog = this.timers.set(tick, 1000);
+          };
+          a.onended = () => finish(true);
+          a.onerror = () => fail();
+          a.src = url;
+          const p = a.play();
+          if (p && typeof p.then === "function") p.then(undefined, () => fail()); // autoplay policy, decode error
+        } catch {
+          fail();
+        }
+      },
+      () => fail(),
+    );
+  }
 
   private enqueue(gen: number, text: string, h: SpeakHandlers) {
     const synth = this.synth!;
@@ -229,6 +397,7 @@ export class Speaker {
     this.gen++;
     this.clearWatchdog();
     this.handlers = null;
+    this.cloudTurn?.cleanup(); // abort the fetch, pause the audio
     if (this.synth && (cancelSynth || was) && (this.synth.speaking || this.synth.pending || this.queued.length)) this.synth.cancel();
     this.queued = [];
     if (was) {
@@ -249,7 +418,8 @@ export class Speaker {
         if (v) {
           this.chosen = v;
           this.voiceLang = v.lang;
-          this.set({ voice: `${v.name} (${v.lang}${v.localService ? ", on device" : ", network"})` });
+          this.browserVoiceLabel = `${v.name} (${v.lang}${v.localService ? ", on device" : ", network"})`;
+          this.set({ voice: this.browserVoiceLabel });
         }
       };
       if (synth.getVoices().length) {
@@ -352,4 +522,29 @@ export function browserSpeaker(): Speaker {
   // Leaving or hiding the page never leaves the tutor talking.
   window.addEventListener("pagehide", () => pageSpeaker?.stop());
   return pageSpeaker;
+}
+
+/**
+ * Opt the page's speaker into the cloud voice IF the server has one configured
+ * (/api/health → voice.provider === "google-chirp3-hd"). Safe to call more than once and on every page
+ * load; resolves false (browser voice stays) on the server, without a key, or on any error.
+ */
+export async function enableCloudVoice(opts: CloudVoiceOptions & { healthUrl?: string; speaker?: Speaker } = {}): Promise<boolean> {
+  try {
+    const sp = opts.speaker ?? (typeof window !== "undefined" ? browserSpeaker() : null);
+    const f = opts.fetch ?? (typeof window !== "undefined" && window.fetch ? (i: string, init: RequestInit) => window.fetch(i, init) : null);
+    if (!sp || !f) return false;
+    const res = await f(opts.healthUrl ?? "/api/health", { cache: "no-store" });
+    if (!res.ok) return false;
+    const v = ((await res.json()) as { voice?: HealthVoice })?.voice;
+    if (v?.provider !== "google-chirp3-hd") return false;
+    const { healthUrl: _h, speaker: _s, ...rest } = opts;
+    return sp.enableCloud({
+      ...rest,
+      maxChars: opts.maxChars ?? v.limits?.maxCharsPerRequest,
+      label: opts.label ?? (v.voice ? `${v.voice} (cloud)` : undefined),
+    });
+  } catch {
+    return false;
+  }
 }

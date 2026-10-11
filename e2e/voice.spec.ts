@@ -18,7 +18,7 @@ async function start(page: Page, o?: MockOpts) {
   await page.goto("/learn/algebra");
   await page.evaluate(() => localStorage.clear());
   await page.goto("/learn/algebra");
-  await page.getByRole("button", { name: "Start the lesson" }).click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
   await expect(page.locator(".note.active")).toContainText("3x + 5 = 20");
   await readAloudOff(page); // isolate voice input from tutor speech unless a test turns it on
 }
@@ -193,7 +193,7 @@ test("tutor speech is never recorded, and the mic never opens by itself", async 
   await page.goto("/learn/algebra");
   await page.evaluate(() => localStorage.clear());
   await page.goto("/learn/algebra");
-  await page.getByRole("button", { name: "Start the lesson" }).click();
+  await page.getByRole("button", { name: "Start Lesson" }).click();
   await expect(page.locator(".note.active")).toBeVisible();
   // The intro is playing. Tapping the mic stops the tutor first, then opens the mic.
   await expect(page.locator(".nextline")).toHaveClass(/p-speaking/);
@@ -283,19 +283,10 @@ test("spoken: the reported BODMAS conversation is understood and repaired", asyn
   t = await speak("subtract five from both sides");
   expect(t.decision.rule).toBe("R30_OP_RIGHT_MOVE");
 
-  // Engineer View: the repeat turn shows what was heard, the context, the meaning, and the exact check.
-  const c = await page.context().newPage();
-  await c.goto("/console?lesson=algebra&tab=timeline");
-  const card = c.locator(".tl-list .tl-item", { hasText: "I said will do multiplication" }).first();
-  await expect(card.locator(".tl-check")).toContainText("Not the move that helps");
-  await card.getByRole("button", { name: "Technical details" }).click();
-  const stage = (k: string) => card.locator(".stage").filter({ has: c.locator(".stage-k", { hasText: new RegExp(`^${k}$`) }) });
-  await expect(stage("Input")).toContainText("I said will do multiplication");
-  await expect(stage("Context")).toContainText("What operation undoes adding 5?");
-  await expect(stage("Context")).toContainText("repeat of the same proposal");
-  await expect(stage("Meaning")).toContainText("multiply");
-  await expect(stage("Meaning")).toContainText("deterministic lexicon");
-  await expect(stage("Operation check")).toContainText("evaluation_order");
-  await expect(stage("Chosen")).toContainText("R31b_OP_EVALUATION_ORDER_REPAIR");
-  await expect(stage("Delivered")).toContainText("No model calls this turn");
+  // The recorded turn (kept in this browser with the session) shows the context and the exact check.
+  const traces = await page.evaluate((k) => JSON.parse(localStorage.getItem(k)!).traces, KEY);
+  const rep = traces.find((x: { event: { text?: string } }) => x.event.text === "I said will do multiplication.");
+  expect(rep.context.repeat).toBe(true);
+  expect(rep.opCheck.verdict).toBe("evaluation_order");
+  expect(rep.llmCalls.filter((c: { kind: string }) => c.kind === "model")).toHaveLength(0);
 });

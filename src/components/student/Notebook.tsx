@@ -1,9 +1,13 @@
 "use client";
 
+import { stageDone, stageLabel, stageSub } from "@/lib/stages";
 import { Fragment, memo, useState, type ReactNode } from "react";
 import type { BoardEntry, FocusRole, SessionState } from "@/engine/types";
 import { Tex } from "../Math";
 import { MathLine } from "./MathLine";
+import { BalanceFigure } from "../lesson/figures";
+import { parseEquation } from "@/engine/algebra";
+import { normalize } from "@/engine/misconceptions";
 
 export interface SpeechProgress {
   turn: number;
@@ -15,6 +19,9 @@ interface Props {
   /** The tutor turn whose terms are highlighted: the one being hovered in the conversation, else the latest. */
   hoverTurn: number | null;
   footer?: ReactNode;
+  /** Send words from the whiteboard (a chosen move) exactly as if typed. */
+  onSay?: (text: string) => void;
+  busy?: boolean;
 }
 
 /**
@@ -27,7 +34,7 @@ interface Props {
  */
 // Memoised: read-aloud progress updates the conversation word by word, and must not re-render the
 // working (with all its KaTeX) each time.
-export const Notebook = memo(function Notebook({ state, hoverTurn, footer }: Props) {
+export const Notebook = memo(function Notebook({ state, hoverTurn, footer, onSay, busy }: Props) {
   const [openPast, setOpenPast] = useState<Record<string, boolean>>({});
   const [showOlderTries, setShowOlderTries] = useState(false);
 
@@ -44,8 +51,8 @@ export const Notebook = memo(function Notebook({ state, hoverTurn, footer }: Pro
         if (!isCurrent && !openPast[p.id]) {
           return (
             <section key={p.id} className="nb-section past" aria-label={`Earlier problem ${p.text}`}>
-              <button className="past-summary" onClick={() => setOpenPast((o) => ({ ...o, [p.id]: true }))} aria-label={`${p.role === "guided" ? "Solved together" : `Check ${i}`}: ${p.text}, ${evidenceWords(pastObs)}. Show working.`}>
-                <span className="past-label">{p.role === "guided" ? "Solved together" : `Check ${i}`}</span>
+              <button className="past-summary" onClick={() => setOpenPast((o) => ({ ...o, [p.id]: true }))} aria-label={`${stageDone(i)}: ${p.text}, ${evidenceWords(pastObs)}. Show working.`}>
+                <span className="past-label">{stageDone(i)}</span>
                 <MathLine raw={p.text} latex={p.latex} size="sm" />
                 <span className="past-arrow">→</span>
                 {final?.raw ? <MathLine raw={final.raw} latex={final.latex} size="sm" /> : <span>—</span>}
@@ -65,8 +72,8 @@ export const Notebook = memo(function Notebook({ state, hoverTurn, footer }: Pro
         return (
           <section key={p.id} className={`nb-section ${isCurrent ? "current" : "reopened"}`} aria-label={`Problem ${p.text}`}>
             <header className="nb-head">
-              <span className="nb-kicker">{p.role === "guided" ? "Solve together" : `Check ${i} · on your own`}</span>
-              {p.role === "transfer" && isCurrent && <span className="nb-sub">A fresh problem with new numbers. Hints are there if you ask, but this one shows what you can do alone.</span>}
+              <span className="nb-kicker">{`${stageLabel(i)} · ${stageSub(i)}`}</span>
+              {p.role === "transfer" && isCurrent && <span className="nb-sub">{i === 1 ? "Same idea, new numbers — this one's yours. Hints are there if you ask." : "Same idea, different shape. Let's see if it carries over — hints are there if you ask."}</span>}
               {!isCurrent && (
                 <button className="link" onClick={() => setOpenPast((o) => ({ ...o, [p.id]: false }))}>
                   hide working
@@ -118,6 +125,7 @@ export const Notebook = memo(function Notebook({ state, hoverTurn, footer }: Pro
                 );
               })}
             </div>
+            {isCurrent && state.phase !== "COMPLETE" && <BoardAids state={state} problemId={p.id} guided={p.role === "guided"} onSay={onSay} busy={busy} />}
           </section>
         );
       })}
@@ -125,6 +133,59 @@ export const Notebook = memo(function Notebook({ state, hoverTurn, footer }: Pro
     </div>
   );
 });
+
+/**
+ * Whiteboard help that follows the lesson state:
+ *  - the balance, when the tutor switched to it, for as long as the line it shows is still the current one;
+ *  - on the problem solved together, once the student has hesitated or slipped, a row of possible moves to
+ *    pick from (one right, the others plausible). Picking one sends those words, which are checked exactly
+ *    like typed words — the student still has to work out what the equation becomes.
+ * Not shown on the independent problems, which measure what the student can do without help.
+ */
+function BoardAids({ state, problemId, guided, onSay, busy }: { state: SessionState; problemId: string; guided: boolean; onSay?: (t: string) => void; busy?: boolean }) {
+  const given = state.board.find((b) => b.problemId === problemId && b.kind === "problem");
+  const since = given?.turn ?? 0;
+  const pic = [...state.transcript].reverse().find((m) => m.role === "tutor" && m.visual === "balance" && m.figure && m.turn >= since);
+  const moved = pic && state.board.some((b) => b.problemId === problemId && (b.status === "valid" || b.status === "final") && (b.turn ?? 0) > pic.turn);
+  const tm = state.teaching;
+  const hesitated = (tm?.confusion ?? 0) > 0 || state.attempts > 0 || (tm?.strategies.length ?? 0) > 0;
+  const moves = guided && hesitated && onSay ? moveChoices(state.lastValidRaw, state.turn) : [];
+  if (!(pic && !moved) && !moves.length) return null;
+  return (
+    <div className="board-aids">
+      {pic && !moved && (
+        <figure className="board-balance" aria-label="The equation as a balance">
+          <BalanceFigure a={pic.figure!.a} b={pic.figure!.b} c={pic.figure!.c} />
+          <figcaption>Both sides weigh the same. Whatever you do to one pan, do to the other.</figcaption>
+        </figure>
+      )}
+      {moves.length > 0 && (
+        <div className="move-choices" role="group" aria-label="Pick a move">
+          <span className="move-q">Not sure what to do next? Pick a move:</span>
+          {moves.map((m) => (
+            <button key={m} className="move-chip" disabled={busy} onClick={() => onSay!(m)}>
+              {m}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One right move and two plausible ones for the current line, in an order that changes with the turn. */
+function moveChoices(raw: string, turn: number): string[] {
+  const eq = parseEquation(raw);
+  if (!eq) return [];
+  const n = normalize(eq);
+  if (n.A.d !== 1 || n.B.d !== 1 || n.C.d !== 1 || n.A.isZero()) return [];
+  const a = n.A.valueOf(), b = n.B.valueOf();
+  if (a === 1 && b === 0) return []; // already solved
+  const k = Math.abs(b);
+  const opts = b > 0 ? [`Subtract ${k} from both sides`, `Add ${k} to both sides`, `Divide both sides by ${a}`] : b < 0 ? [`Add ${k} to both sides`, `Subtract ${k} from both sides`, `Divide both sides by ${a}`] : [`Divide both sides by ${a}`, `Multiply both sides by ${a}`, `Subtract ${a} from both sides`];
+  const r = turn % 3;
+  return [...opts.slice(r), ...opts.slice(0, r)];
+}
 
 function Connector({ entry }: { entry: BoardEntry }) {
   const o = entry.observed!;

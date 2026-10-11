@@ -106,7 +106,7 @@ describe("the subject readers and verifiers", () => {
     expect(c.misconception?.id).toBe(mis);
   });
   it("motion questions use a closed outcome list; anything else is not judged", () => {
-    const moving = makePhysicsProblems(3)[2];
+    const moving = Array.from({ length: 50 }, (_, i) => makePhysicsProblems(i + 1)[2]).find((p) => p.kind === "balanced-moving")!;
     expect(moving.kind).toBe("balanced-moving");
     const v = (t: string) => ph.verify(readMessage(ph, t, moving), moving);
     expect(v("it keeps going at the same speed").verdict).toBe("correct");
@@ -194,7 +194,8 @@ async function geoStart() {
 describe("model reading in the subject lessons", () => {
   it("an answer the model reads is still verified by the subject verifier", async () => {
     const mod = SUBJECTS.physics;
-    let s = createSubjectSession(mod, { sessionId: "llm-p", seed: 3 });
+    const seed = Array.from({ length: 50 }, (_, i) => i + 1).find((k) => makePhysicsProblems(k)[2].kind === "balanced-moving")!;
+    let s = createSubjectSession(mod, { sessionId: "llm-p", seed });
     s = { ...s, current: 2, phase: "TRANSFER" }; // the balanced, already-moving trolley
     const right = new Fake(() => reading({ kind: "answer", outcome: "same_speed" }));
     const r = await stepSubject(mod, s, { type: "text", text: "it just cruises along like before", via: "keyboard" }, { teacher: new LlmTeacher(right) });

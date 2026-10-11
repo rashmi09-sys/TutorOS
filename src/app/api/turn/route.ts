@@ -21,7 +21,7 @@ const Event = z.discriminatedUnion("type", [
     via: z.enum(["keyboard", "voice"]),
     interruptedTutor: z.boolean().optional(),
     id: EventId,
-    source: z.enum(["typed", "help-option"]).optional(),
+    source: z.enum(["typed", "help-option", "board"]).optional(),
     // How a spoken line was captured — console diagnostics only, never used for teaching.
     voice: z
       .object({

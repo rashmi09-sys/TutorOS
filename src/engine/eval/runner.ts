@@ -71,7 +71,7 @@ export async function runScenario(sc: Scenario, teacher: TeachingModel, policy: 
 
 export function computeMetrics(results: ScenarioResult[]): SuiteMetrics {
   const all = results.flatMap((r) => r.assertions);
-  const cats: AssertionCategory[] = ["leak", "math", "diagnosis", "appropriateness", "recovery", "mastery", "robustness"];
+  const cats: AssertionCategory[] = ["leak", "math", "diagnosis", "appropriateness", "recovery", "mastery", "robustness", "context", "language", "repetition"];
   const byCategory = Object.fromEntries(cats.map((c) => [c, { passed: all.filter((a) => a.category === c && a.passed).length, total: all.filter((a) => a.category === c).length }])) as SuiteMetrics["byCategory"];
   const traces = results.flatMap((r) => r.traces);
   const lat = traces.map((t) => t.totalLatencyMs).sort((a, b) => a - b);
