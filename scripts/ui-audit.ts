@@ -5,7 +5,10 @@
  *   - clipped text (an element whose text overflows its box while overflow is hidden / ellipsised)
  *   - controls that overlap each other, or sit outside the viewport
  *
- *   BASE=http://localhost:3100 OUT=docs/screenshots/ui npx tsx scripts/ui-audit.ts
+ *   BASE=http://localhost:3100 OUT=docs/screenshots/ui E2E_USERNAME=… E2E_PASSWORD=… npx tsx scripts/ui-audit.ts
+ *
+ * The sign-in page is audited signed out (empty and with an error); then each context signs in through the
+ * real endpoint with E2E_USERNAME / E2E_PASSWORD (a throwaway account on the server under test).
  */
 import { chromium, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
@@ -102,17 +105,22 @@ async function defects(page: Page, label: string) {
   return r.length;
 }
 
-async function waitTurn(page: Page, before: number, key = "tutoros.session.v2") {
-  await page.waitForFunction(([b, k]) => (JSON.parse(localStorage.getItem(k as string) ?? "null")?.state?.turn ?? 0) > (b as number), [before, key]);
+async function waitTurn(page: Page, before: number, key = "tutoros.session.v3") {
+  await page.waitForFunction(([b, k]) => (JSON.parse(localStorage.getItem(k as string) ?? "null")?.view?.turn ?? 0) > (b as number), [before, key]);
   await page.waitForTimeout(250);
 }
-const turn = (page: Page, key = "tutoros.session.v2") => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.state?.turn ?? 0, key);
-async function say(page: Page, text: string, key = "tutoros.session.v2") {
+const turn = (page: Page, key = "tutoros.session.v3") => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.view?.turn ?? 0, key);
+async function say(page: Page, text: string, key = "tutoros.session.v3") {
   const b = await turn(page, key);
   const input = page.getByLabel("Your answer or message");
   await input.fill(text);
   await input.press("Enter");
   await waitTurn(page, b, key);
+}
+
+async function signIn(ctx: import("@playwright/test").BrowserContext) {
+  const res = await ctx.request.post(`${BASE}/api/auth/login`, { data: { username: process.env.E2E_USERNAME, password: process.env.E2E_PASSWORD }, headers: { origin: new URL(BASE).origin } });
+  if (res.status() !== 200) throw new Error(`sign-in failed: ${res.status()}`);
 }
 
 (async () => {
@@ -123,6 +131,19 @@ async function say(page: Page, text: string, key = "tutoros.session.v2") {
     await ctx.addInitScript("window.__name = (f) => f;"); // tsx keeps function names; the page needs the helper
     const page = await ctx.newPage();
     await page.addInitScript(MOCK);
+    // Sign-in page, signed out: as it opens, then with the error message showing.
+    await page.goto(`${BASE}/signin`);
+    await page.waitForTimeout(700);
+    await page.screenshot({ path: `${OUT}/${width}-00-signin.png`, fullPage: true });
+    total += await defects(page, `${width} signin`);
+    await page.getByLabel("Username").fill("nobody");
+    await page.getByLabel("Password", { exact: true }).fill("wrong-password");
+    await page.getByRole("button", { name: "Sign In" }).click();
+    await page.locator("#signin-error").filter({ hasText: /match|Too many/ }).waitFor();
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: `${OUT}/${width}-01-signin-error.png`, fullPage: true });
+    total += await defects(page, `${width} signin error`);
+    await signIn(ctx);
     await page.goto(BASE);
     await page.evaluate(() => localStorage.clear());
     await page.goto(BASE);
@@ -132,11 +153,12 @@ async function say(page: Page, text: string, key = "tutoros.session.v2") {
     // Geometry and physics lessons
     for (const [lesson, lines] of [["geometry", ["105", "I'm stuck", "75"]], ["physics", ["20 N", "4", "to the right"]]] as const) {
       await page.goto(`${BASE}/learn/${lesson}`);
+      await page.waitForLoadState("networkidle"); // the remembered sound choice is applied after hydration
       const sound = page.getByRole("button", { name: "Sound on" });
       if (await sound.count()) await sound.click();
       await page.getByRole("button", { name: "Start Lesson" }).click();
-      await page.waitForFunction((k) => !!localStorage.getItem(k), `tutoros.session.${lesson}.v1`);
-      for (const t of lines) await say(page, t, `tutoros.session.${lesson}.v1`);
+      await page.waitForFunction((k) => !!localStorage.getItem(k), `tutoros.session.${lesson}.v2`);
+      for (const t of lines) await say(page, t, `tutoros.session.${lesson}.v2`);
       await page.locator(".sp-explore summary").click();
       await page.waitForTimeout(200);
       await page.screenshot({ path: `${OUT}/${width}-0-${lesson}.png`, fullPage: true });
@@ -147,7 +169,7 @@ async function say(page: Page, text: string, key = "tutoros.session.v2") {
     await page.screenshot({ path: `${OUT}/${width}-0-welcome.png`, fullPage: true });
     total += await defects(page, `${width} welcome`);
     await page.getByRole("button", { name: "Start Lesson" }).click();
-    await page.waitForFunction(() => !!localStorage.getItem("tutoros.session.v2"));
+    await page.waitForFunction(() => !!localStorage.getItem("tutoros.session.v3"));
     await page.waitForTimeout(300);
     for (const t of ["x = 8", "I added the 3 and the 5", "3x = 25", "I'm sure 3x = 25 is right", "I'm stuck"]) await say(page, t);
     await page.screenshot({ path: `${OUT}/${width}-1-lesson.png`, fullPage: true });
@@ -176,9 +198,11 @@ async function say(page: Page, text: string, key = "tutoros.session.v2") {
     }
     // finish the lesson
     for (let i = 0; i < 2; i++) {
+      // The page never holds the answer: work it out from the problem, as a student would.
       const eq = await page.evaluate(() => {
-        const s = JSON.parse(localStorage.getItem("tutoros.session.v2")!).state;
-        return s.problems[s.current].answer as string;
+        const s = JSON.parse(localStorage.getItem("tutoros.session.v3")!).view;
+        const p = s.problems[s.current] as { a: number; b: number; c: number };
+        return String((p.c - p.b) / p.a);
       });
       await say(page, `x = ${eq}`);
     }
@@ -189,13 +213,14 @@ async function say(page: Page, text: string, key = "tutoros.session.v2") {
   // 200% zoom ≈ a 720px-wide viewport at device scale 2
   const z = await browser.newContext({ viewport: { width: 720, height: 450 }, deviceScaleFactor: 2, extraHTTPHeaders: { "x-forwarded-for": "10.77.1.1" } });
   await z.addInitScript("window.__name = (f) => f;");
+  await signIn(z);
   const zp = await z.newPage();
   await zp.addInitScript(MOCK);
   await zp.goto(`${BASE}/learn/algebra`);
   await zp.evaluate(() => localStorage.clear());
   await zp.goto(`${BASE}/learn/algebra`);
   await zp.getByRole("button", { name: "Start Lesson" }).click();
-  await zp.waitForFunction(() => !!localStorage.getItem("tutoros.session.v2"));
+  await zp.waitForFunction(() => !!localStorage.getItem("tutoros.session.v3"));
   await say(zp, "x = 8");
   await say(zp, "I'm stuck");
   await zp.screenshot({ path: `${OUT}/zoom200-lesson.png`, fullPage: true });

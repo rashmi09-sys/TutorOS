@@ -7,8 +7,8 @@ step(state, event, deps) → { state', utterance, trace, duplicate? }
 ```
 
 ```
-Browser (state + HMAC signature + event id)
-   │  POST /api/turn
+Browser (session cookie + sealed state + event id)
+   │  POST /api/turn → middleware (session, Origin) → route (session again, open sealed state)
    ▼
 Perceive ──► Permit ──► Choose ──► Guard ──► Update
  exact maths   policy     teaching   leaks,    learner state,
@@ -17,7 +17,11 @@ Perceive ──► Permit ──► Choose ──► Guard ──► Update
  diagnosis     candidates or LLM)    length
    │                                            │
    └──────────────── trace (every stage) ◄──────┘
+   │
+   ▼  server keeps the trace (logs ids only); the browser gets a redacted view + the new sealed state
 ```
+
+Access to all of this requires sign-in, enforced on the server; see [SECURITY.md](SECURITY.md).
 
 ## v6 in one page: the five questions, answered by the code
 
@@ -42,7 +46,7 @@ Each turn the policy returns the **permitted** moves for what was observed, defa
 
 ### 2. A harness that keeps the session coherent — `engine.ts`, `types.ts`
 
-One authoritative state, signed by the server (HMAC) and held by the browser:
+One authoritative state, sealed by the server (AES-256-GCM, bound to the lesson and user) and held by the browser as an opaque blob; the page draws from a redacted view of it (`src/lib/server/view.ts`):
 
 | Brief asked for | Field(s) |
 |---|---|
@@ -206,13 +210,15 @@ Every call is recorded in the trace as an `LlmCall` with `kind: "model" | "templ
 
 ## 4. Session management (`src/lib/`, `src/app/api/turn/route.ts`)
 
-- **Stateless server.** The browser holds the session state and an HMAC-SHA256 signature the server issued (`session-token.ts`, key `SESSION_SECRET`). The server verifies the signature over the raw request body, so any edit (e.g. raising `pKnown` in devtools) → `409` and a "start a new lesson" path.
-- **Persistence.** `localStorage` key `tutoros.session.v2` (state, signature, traces). Reload resumes; *Delete my data* clears it.
+- **Stateless server, sealed state.** The browser holds the lesson state as an encrypted, authenticated blob (`sealed-state.ts`, AES-256-GCM, key from `SESSION_SECRET` or `AUTH_SECRET`, bound to the lesson and the signed-in user) plus a whitelisted, redacted view to draw from (`view.ts`: no unreached answers, seed, rule names, dialogue or diagnosis internals). The server continues only from the blob, so any edit → `409` and a "start a new lesson" path. Rule names become a few display cues (`Message.cue`).
+- **Persistence.** `localStorage` key `tutoros.session.v3` (view, sealed state; geometry/physics `…{lesson}.v2`). Older saves, which held the full state and traces, are deleted on load. Reload resumes; *Delete my data* and *Sign out* clear it.
+- **Traces stay on the server.** `/api/turn` returns `{view, sealed, utterance, turnId, duplicate, teacher, requestId}`; the trace is used for logging (ids, rule, timings) and the eval runner reads it in-process.
 - **Idempotency.** Every event has an id. A duplicate against the post-state is a no-op; a retry against the pre-state recomputes the same turn; the client discards stale responses. One automatic retry on network failure.
 - **Cancel.** Aborting a pending turn applies nothing (the server has no state to roll back); the line stays in the input.
 - **Limits.** zod input validation, 512 KB body, 500-character messages, 300-turn cap, per-IP rate limits (in-memory, per instance).
 - **Logs.** Structured JSON with request id, hashed ids, rule and timings. No student text, no tutor utterances.
-- **Health.** `/api/health` reports teacher mode and `degraded` when `SESSION_SECRET` is unset.
+- **Health.** `/api/health` (signed in only) reports which teacher and voice are active.
+- **Access.** Middleware plus per-route checks require a session for every page and API except `/signin` and the sign-in/out endpoints; see [SECURITY.md](SECURITY.md).
 
 ## 5. Voice and speech (`src/lib/voice/`)
 
@@ -246,7 +252,7 @@ idle ──speak(id)──▶ preparing (voices loading) ──▶ speaking ─�
 - Cancelled turns never report "finished"; events from older turns are ignored. Speech errors can't crash the page.
 - The app speaks only a turn the student just caused on this page, and only if sound is on. Opening the mic stops speech and waits 250 ms for the echo to die away. Leaving the page stops speech.
 
-Each spoken turn sends `voice` metadata (segments, interim updates, duplicates ignored, silent resumes, duration, how it ended) with the event; it is recorded in the trace and never used for teaching.
+Each spoken turn sends `voice` metadata (segments, interim updates, duplicates ignored, silent resumes, duration, how it ended) with the event; it is recorded in the server-side trace and never used for teaching.
 
 ## 6. Mastery measurement (`mastery.ts`)
 
@@ -274,9 +280,10 @@ src/engine/            algebra, fraction, intent, observe, misconceptions, reaso
   llm/                   provider.ts, anthropic.ts, openai.ts, teacher.ts, factory.ts
   understand.ts          moves in words → StudentMeaning; checkOperation
   eval/                  scenarios.ts (50), runner.ts
-src/app/               /, /learn/*, /api/turn, /api/health, /api/tts, error boundaries
+src/app/               /signin; (app)/ → /, /learn/* (server-side session check); /api/auth/*, /api/turn, /api/health, /api/tts; error boundaries
+src/middleware.ts      authentication gate, Origin (CSRF) check, per-request CSP
 src/components/        StudentApp + student/* (notebook, margin notes, next line), SubjectLesson, lesson/*
-src/lib/               useTutorSession, storage, helpOptions, terms; voice/ (controller, speaker, hooks); server/ (signing, rate limit, logs)
+src/lib/               useTutorSession, storage, helpOptions, terms, tex; auth/ (tokens, password, server, client); voice/ (controller, speaker, hooks); server/ (sealed state, view, rate limit, logs, tts)
 src/engine/language/   templates.ts, explanations.ts (NOTICE / THINK / TRY / examples)
 tests/                 vitest (13 files)     e2e/   Playwright (4 files + fixtures)
 scripts/               run-eval.ts, probe.ts

@@ -164,19 +164,19 @@ export function actionLabel(m: Message) {
   if (m.action === "CLARIFY") return "Quick question";
   if (m.action === "WAIT") return "Take your time";
   if (m.stage === "NOTICE") return "Notice";
-  if (m.stage === "THINK") return m.rule === "R25_SMALL_EXAMPLE" ? "Small example" : "Think";
-  if (m.stage === "TRY") return m.rule?.startsWith("R23") || m.rule?.startsWith("R27") ? "Your move" : `Try · hint ${Math.min(3, Math.max(1, m.hintLevel ?? 2))} of 3`;
+  if (m.stage === "THINK") return m.cue === "small_example" ? "Small example" : "Think";
+  if (m.stage === "TRY") return m.cue === "your_move" ? "Your move" : `Try · hint ${Math.min(3, Math.max(1, m.hintLevel ?? 2))} of 3`;
   switch (m.action) {
     case "ASK":
       return "Question";
     case "HINT":
       return `Hint ${Math.min(3, Math.max(1, m.hintLevel ?? 1))} of 3`;
     case "EXPLAIN":
-      return m.rule?.startsWith("R18") ? "The idea" : m.rule === "R9_REVEAL_AFTER_EFFORT" ? "Worked solution" : "Worked step";
+      return m.cue === "idea" ? "The idea" : m.cue === "worked_solution" ? "Worked solution" : "Worked step";
     case "ASSESS":
-      return m.rule === "R1_GUIDED_SOLVED" ? "Try It Yourself" : m.rule?.startsWith("R16") ? "How you did" : "Challenge Yourself";
+      return m.cue === "solved_guided" ? "Try It Yourself" : m.cue === "summary" ? "How you did" : "Challenge Yourself";
     case "VERIFY":
-      return m.rule?.startsWith("R1_") || m.rule?.startsWith("R16") ? "Checked" : "Let’s check";
+      return m.cue === "fresh" || m.cue === "solved_guided" || m.cue === "summary" ? "Checked" : "Let’s check";
     case "RECAP":
       return "Recap";
     default:

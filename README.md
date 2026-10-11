@@ -29,7 +29,8 @@ A general chatbot is helpful in the wrong way: asked about a maths problem, it s
 - **Three stages in every lesson:** guided → independent (same idea, new numbers: 4x + 3 = 19) → transfer (a new twist). Guided and unaided performance are recorded and shown separately.
 - **Voice.** Speech input and read-aloud use the browser's built-in Web Speech API by default. The tutor's voice is **Google Cloud Chirp 3 HD (Sulafat)** through the official `@google-cloud/text-to-speech` library behind `/api/tts` — Application Default Credentials locally, Workload Identity Federation on Vercel, no keys anywhere, rate limits and character caps, and the browser voice as the fallback for any failure. It is on when `GOOGLE_TTS_ENABLED=true`; real audio hasn't been produced in this repository's test environment (no Google credentials there) ([docs/VOICE.md](docs/VOICE.md)). Nothing plays until the student chooses; Stop and Replay; opening the mic stops the tutor first. Typing does everything voice does.
 - **A student-only app.** A short welcome ("Ready to figure this out?", **Start Lesson**, a Sound on/off toggle), then the lesson. Three stages, named for the student: **Learn Together** (guided), **Try It Yourself** (a new problem, unaided), **Challenge Yourself** (a different twist). The engineering console that earlier versions had (`/console`, `/api/eval`) has been removed from the app; the evaluation suites run from the command line (`npm run eval`) and the architecture is described below and in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- **Reliability:** signed client-held session state (tampering is refused), idempotent turns, timeouts and fallbacks for model calls, rate limits, per-lesson saved progress with Continue / Start again.
+- **Private by default.** A sign-in page is the only thing visible without a session. The server enforces it on every page and API (middleware + per-route checks), with an HttpOnly session cookie, a scrypt password hash kept in a server-only environment variable, login rate limits, CSRF and security headers. The browser gets a redacted view of the lesson and an encrypted state blob; traces, policy rules, templates and unreached answers stay on the server. See [docs/SECURITY.md](docs/SECURITY.md).
+- **Reliability:** sealed client-held session state (tampering is refused), idempotent turns, timeouts and fallbacks for model calls, rate limits, per-lesson saved progress with Continue / Start again.
 
 ## The tutoring journey (algebra)
 
@@ -79,17 +80,21 @@ Production mode: `npm run build && npm start` (port 3000; `npm start -- -p 3100`
 
 ## Environment variables
 
-All optional for local use. Names and comments are in [`.env.example`](.env.example); put values in `.env.local` (git-ignored, read by Next.js and by `npm run eval`). Keys are only read on the server.
+Sign-in needs the three `AUTH_*` variables; everything else is optional for local use. Names and comments are in [`.env.example`](.env.example); put values in `.env.local` (git-ignored, read by Next.js and by `npm run eval`). All of them are read only on the server.
 
 | Variable | Purpose |
 |---|---|
+| `AUTH_USERNAME` | The account's username. **Required** |
+| `AUTH_PASSWORD_HASH` | scrypt hash of the password from `npm run --silent auth:hash` (hidden prompt; prints only the hash). **Required; secret.** The password itself is stored nowhere |
+| `AUTH_SECRET` | 32+ random characters (`npm run --silent auth:secret`) that sign the session cookie. **Required; secret** |
+| `AUTH_SESSION_TTL_HOURS` | Session length (default 8) |
 | `ANTHROPIC_API_KEY` | Enables the LLM teacher via Anthropic (default model `claude-haiku-5-5`) |
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | Enables it via any OpenAI-compatible endpoint (set `LLM_MODEL` too) |
 | `LLM_PROVIDER`, `LLM_MODEL` | Choose provider / model explicitly |
 | `LLM_TIMEOUT_MS` | Per-call timeout (default 8000) |
 | `LLM_MAX_CALLS_PER_SESSION` | Cost cap: model calls one lesson may make; after that the lesson continues deterministically (default 150) |
 | `PRICE_INPUT_PER_MTOK`, `PRICE_OUTPUT_PER_MTOK` | USD per million tokens; without them cost is shown as unknown, never guessed |
-| `SESSION_SECRET` | HMAC key (32+ chars) for signing session state. **Required in production**; without it a fixed dev key is used and `/api/health` reports `degraded` |
+| `SESSION_SECRET` | 32+ random characters; the key that encrypts the lesson state the browser holds. Secret. If unset, a key derived from `AUTH_SECRET` is used |
 | `GOOGLE_TTS_ENABLED`, `GOOGLE_CLOUD_PROJECT` | `true` turns on the Google Chirp 3 HD voice (a **paid** API) for that project. Local auth: Application Default Credentials (`gcloud auth application-default login`) — no keys |
 | `GOOGLE_TTS_VOICE`, `GOOGLE_TTS_SPEAKING_RATE` | Voice (default `en-US-Chirp3-HD-Sulafat`) and pace (default 1.0) |
 | `TTS_MAX_CHARS_PER_REQUEST`, `TTS_MAX_CHARS_PER_DAY`, `TTS_RATE_LIMIT_PER_MINUTE`, `TTS_TIMEOUT_MS` | Cost and reliability caps (defaults 1000, 100000, 30, 8000); over a cap the browser voice is used |
@@ -196,14 +201,14 @@ How to read it:
 |---|---|---|
 | Typecheck | `npm run typecheck` | clean |
 | Lint | `npm run lint` (ESLint 9, typescript-eslint, react-hooks, next) | 0 errors, 0 warnings |
-| Unit + integration | `npm test` | **332 / 332 passed** (18 files; `tests/teaching.test.ts` covers the twelve teaching-behaviour cases, `tests/tts.test.ts` the optional cloud voice against a fake endpoint) |
+| Unit + integration | `npm test` | **374 / 374 passed** (20 files; `tests/teaching.test.ts` covers the twelve teaching-behaviour cases, `tests/tts.test.ts` the optional cloud voice against a fake endpoint, `tests/auth.test.ts` sign-in, sessions and the server-side gate, `tests/xss.test.ts` the maths renderer) |
 | Scenario evals | `npm run eval` | B 59/59 (269/269 assertions) · A 9/59 · C not run · G 17/17 · P 16/16 |
 | Production build | `npm run build` | passes |
-| Browser e2e (Playwright, Chromium) | `npm run test:e2e` | **46 / 46 passed** (7 files, against the production build; two consecutive runs). `e2e/whiteboard.spec.ts`: tapping the stronger arrow answers the tutor's question and the student finishes the problem; the balance appears on the third "I don't know" and disappears when the line changes; a move chosen on the board gets the same computed reply as typing; geometry's lit angles and 180° strip; "let me think" hides the help buttons. `e2e/lesson.spec.ts` now includes the Grade 7 journey: `3x = 25` → targeted question → `15 = 3x` accepted → `x = 5` → 4x + 3 = 19 on your own → off-topic message ignored → solved → the "What I saw" table. `e2e/navigation.spec.ts` covers the full journey (home → algebra → wrong answer → hint → home → resume → complete → home), browser back/forward, the logo and "All lessons" on all three lessons, reload, per-lesson progress and Start again |
-| Visual audit | `scripts/ui-audit.ts` | home, the welcome state and the three lessons at 320–1440 px and 200 % zoom: no layout defects found |
-| Fresh install | `npm ci && npm run build && npm start` in a clean copy | starts; `/api/health` responds |
+| Browser e2e (Playwright, Chromium) | `npm run test:e2e` (sign-in setup: [docs/SECURITY.md](docs/SECURITY.md#tests)) | **56 / 56 passed** (9 files, against the production build; two consecutive runs). `e2e/auth.spec.ts`: signed-out pages and APIs refused, wrong credentials, sign-in, cookie flags, sign out, a session ending mid-lesson. `e2e/whiteboard.spec.ts`: tapping the stronger arrow answers the tutor's question and the student finishes the problem; the balance appears on the third "I don't know" and disappears when the line changes; a move chosen on the board gets the same computed reply as typing; geometry's lit angles and 180° strip; "let me think" hides the help buttons. `e2e/lesson.spec.ts` now includes the Grade 7 journey: `3x = 25` → targeted question → `15 = 3x` accepted → `x = 5` → 4x + 3 = 19 on your own → off-topic message ignored → solved → the "What I saw" table. `e2e/navigation.spec.ts` covers the full journey (home → algebra → wrong answer → hint → home → resume → complete → home), browser back/forward, the logo and "All lessons" on all three lessons, reload, per-lesson progress and Start again |
+| Visual audit | `scripts/ui-audit.ts` | the sign-in page (empty and with an error), home, the welcome state and the three lessons at 320–1440 px and 200 % zoom: no layout defects found |
+| Dependency audit | `npm audit` | no runtime advisories; 4 high in a dev-only lint dependency chain with no fix (see SECURITY.md) |
 
-What the tests cover — v5 adds `tests/journey.test.ts` (the 3x + 5 = 20 → 4x + 3 = 19 journey through the real engine: a wrong step gets a question, not the answer; equivalent correct lines in four forms; an off-topic message changes nothing; ASSESS on solving; the evidence record for a clean run, for a run with a mistake, and for asking for help on the fresh problem — which is not counted as independent). v4 adds `tests/subjects.test.ts` (36 tests: spoken and written number reading, arithmetic re-checks, both problem generators over 400 seeds, every verifier verdict and recognised mistake, a leak sweep over more than 5,000 hint / explanation / example / feedback replies, every geometry and physics scenario, idempotency, voice = typing, the structured model reading with a fake provider — verified, invented numbers rejected, closed labels enforced, timeout fallback — and the API refusing a state from another lesson). `e2e/home-subjects.spec.ts` covers the home screen and Continue, a geometry lesson to question 3 including the explorer, a physics lesson with a spoken answer and the bounded outcome check a check that the console routes are gone, and phone width. v3.4 adds `tests/understand.test.ts` (41 tests: interpretation of each documented phrasing, exact verdicts on four equation shapes, the reported BODMAS conversation as a regression, repeats, corrections, frustration, "Wait, why?", one-question replies, idempotent events, identical voice/typed handling) and structured-LLM-interpretation tests in `tests/language.test.ts` (fake provider: operation readings verified exactly, a model can't make a wrong move right, invented numbers and invented fields rejected, timeout fallback, the per-session call budget). v3.1 adds `tests/voice.test.ts` (voice state machine with a fake recognizer: start, cancel, Done, pauses, interim vs final, duplicate events, permission denied, no microphone, unsupported, browser-ended sessions and capped resume, rapid start/cancel, dispose), `tests/speaker.test.ts` (no overlapping tutor speech, cancelled speech never reports "finished", maths read as words, phrase splitting, speech errors can't crash the page) and `tests/language.test.ts` (every documented phrase, NOTICE → THINK → TRY, rephrasing, bare "why?", ambiguity, "don't tell me the answer", ~1,000 explanation texts checked for leaks and false maths, LLM interpretation boundary with a fake provider). Earlier: algebra (exact, spoken, malformed); misconception diagnosis by step and by value; one regression test per audit finding; guard (leaks, false arithmetic, ungrounded equations, quoting); BKT and evidence states; engine purity, idempotency, session cap; the LLM layer with fake providers (non-default choice, invented candidate → schema reject, answer leak → guard reject → retry → fallback, false arithmetic rejected, transport failure → immediate fallback, reveal can't be unlocked, classification fallback); provider transport (retry, timeout, no retry on 4xx); **real HTTP round-trips through the Anthropic SDK and the OpenAI-compatible client against local fake servers** (no network, no keys); API routes (signed resume, tamper → 409, duplicate events, input validation, rate limiting, C reported as not run).
+What the tests cover — v5 adds `tests/journey.test.ts` (the 3x + 5 = 20 → 4x + 3 = 19 journey through the real engine: a wrong step gets a question, not the answer; equivalent correct lines in four forms; an off-topic message changes nothing; ASSESS on solving; the evidence record for a clean run, for a run with a mistake, and for asking for help on the fresh problem — which is not counted as independent). v4 adds `tests/subjects.test.ts` (36 tests: spoken and written number reading, arithmetic re-checks, both problem generators over 400 seeds, every verifier verdict and recognised mistake, a leak sweep over more than 5,000 hint / explanation / example / feedback replies, every geometry and physics scenario, idempotency, voice = typing, the structured model reading with a fake provider — verified, invented numbers rejected, closed labels enforced, timeout fallback — and the API refusing a state from another lesson). `e2e/home-subjects.spec.ts` covers the home screen and Continue, a geometry lesson to question 3 including the explorer, a physics lesson with a spoken answer and the bounded outcome check a check that the console routes are gone, and phone width. v3.4 adds `tests/understand.test.ts` (41 tests: interpretation of each documented phrasing, exact verdicts on four equation shapes, the reported BODMAS conversation as a regression, repeats, corrections, frustration, "Wait, why?", one-question replies, idempotent events, identical voice/typed handling) and structured-LLM-interpretation tests in `tests/language.test.ts` (fake provider: operation readings verified exactly, a model can't make a wrong move right, invented numbers and invented fields rejected, timeout fallback, the per-session call budget). v3.1 adds `tests/voice.test.ts` (voice state machine with a fake recognizer: start, cancel, Done, pauses, interim vs final, duplicate events, permission denied, no microphone, unsupported, browser-ended sessions and capped resume, rapid start/cancel, dispose), `tests/speaker.test.ts` (no overlapping tutor speech, cancelled speech never reports "finished", maths read as words, phrase splitting, speech errors can't crash the page) and `tests/language.test.ts` (every documented phrase, NOTICE → THINK → TRY, rephrasing, bare "why?", ambiguity, "don't tell me the answer", ~1,000 explanation texts checked for leaks and false maths, LLM interpretation boundary with a fake provider). Earlier: algebra (exact, spoken, malformed); misconception diagnosis by step and by value; one regression test per audit finding; guard (leaks, false arithmetic, ungrounded equations, quoting); BKT and evidence states; engine purity, idempotency, session cap; the LLM layer with fake providers (non-default choice, invented candidate → schema reject, answer leak → guard reject → retry → fallback, false arithmetic rejected, transport failure → immediate fallback, reveal can't be unlocked, classification fallback); provider transport (retry, timeout, no retry on 4xx); **real HTTP round-trips through the Anthropic SDK and the OpenAI-compatible client against local fake servers** (no network, no keys); API routes (sealed resume, tamper → 409, duplicate events, input validation, rate limiting, C reported as not run).
 
 v3 adds `tests/presentation.test.ts`: observed operations, confidence caps, no misconception labels in any delivered utterance, and note anchoring/term focus.
 
@@ -214,9 +219,10 @@ The e2e suite drives the real UI. `e2e/voice.spec.ts` replaces the browser's spe
 ```mermaid
 flowchart LR
   subgraph Browser
-    UI[Student UI<br/>board · chat · voice] -->|signed state + event id| API
+    UI[Student UI<br/>board · chat · voice] -->|session cookie + sealed state + event id| MW
   end
-  subgraph "POST /api/turn (stateless; verifies HMAC)"
+  MW[Middleware<br/>session · Origin · CSP] --> API
+  subgraph "POST /api/turn (stateless; opens the sealed state)"
     API --> P[Perceive<br/>intent in context · meaning of moves in words · exact maths · step diagnosis · reasoning check]
     P -. lexicon unsure .-> I[LLM structured reading<br/>zod-validated · optional]
     I -. meaning .-> V
@@ -231,7 +237,7 @@ flowchart LR
     G -- 2nd reject / timeout --> D
     D --> U[Update<br/>learner state · mastery evidence · board]
     G -- pass --> U
-    U --> OUT[state' + signature + trace]
+    U --> OUT[redacted view + sealed state'<br/>trace stays on the server]
   end
   OUT --> UI
   EV[Eval runner · algebra A/B/C · geometry · physics] --> P
@@ -254,9 +260,11 @@ src/engine/                    framework-free TypeScript
   engine.ts                    perceive → permit → choose → update; idempotency
   llm/                         provider seam (anthropic.ts, openai.ts), teacher.ts, factory.ts
   eval/                        scenarios.ts (50), runner.ts (metrics)
-src/app/                       Next.js: home, /learn/{algebra,physics,geometry}, /api/turn, /api/health, /api/tts, error boundaries
+src/app/                       Next.js: /signin, (app)/ home and /learn/{algebra,physics,geometry} behind a server-side session check, /api/auth/{login,logout}, /api/turn, /api/health, /api/tts, error boundaries
+src/middleware.ts              the authentication gate, CSRF Origin check and per-request CSP
+src/lib/auth/                  session tokens (Web Crypto HMAC), scrypt password check, server helpers, client sign-out
 src/components/                Home, lesson/LessonShell (shared shell + welcome), StudentApp (algebra), SubjectLesson, lesson/figures
-src/lib/server/                session signing, rate limiting, redacted logging, tts.ts (optional Chirp 3 HD voice with caps)
+src/lib/server/                sealed-state.ts (AES-256-GCM lesson state), view.ts (what the browser may see), rate limiting, redacted logging, tts.ts (optional Chirp 3 HD voice with caps)
 src/lib/                       evidence.ts (what was observed per problem), stages.ts, voice/ (speech controller, mic state machine, cloud voice)
 tests/  e2e/                   vitest, Playwright
 docs/                          AUDIT, RESEARCH, CASE_STUDY, DEMO_SCRIPT, INTEGRATION, OUTREACH
@@ -275,13 +283,14 @@ This is an instrument for estimating understanding within a session — not a va
 
 ## Reliability and data handling
 
-- **Signed session state:** the server is stateless; the browser holds state + an HMAC the server issued. Edits → 409 and a "start a new lesson" path. Survives reloads.
+- **Sign-in:** every page and API needs a session; see [docs/SECURITY.md](docs/SECURITY.md).
+- **Sealed session state:** the server is stateless; the browser holds an encrypted, authenticated state blob (bound to the lesson and user) and a redacted view to draw from. Edits → 409 and a "start a new lesson" path. Survives reloads.
 - **Idempotency:** every event has an id. A duplicate against the post-state is a no-op; a retry against the pre-state recomputes the same turn once; the client discards stale responses.
 - **Model calls:** per-call timeout (AbortController), one transient retry (timeouts, 429, 5xx), schema validation, guard, one repair retry, deterministic fallback.
 - **Input validation** (zod), 512 KB body limit, 500-char messages, 300-turn session cap, per-IP rate limits (in-memory, per instance).
 - **Logs:** structured JSON with request id, hashed trace/session ids, rule, timings, model-call counts. **No student text or tutor utterances.**
-- **Student data:** no name, no account, no audio stored. Transcripts live in the student's browser; the profile drawer shows everything stored and deletes it.
-- **Health:** `/api/health` reports teacher mode, pricing config, and `degraded` when `SESSION_SECRET` isn't set.
+- **Student data:** one shared sign-in, no name, no audio stored. Transcripts live in the student's browser until sign-out; the profile drawer shows everything stored and deletes it.
+- **Health:** `/api/health` (signed in only) reports which teacher and voice are active, nothing more.
 - Route-level error boundary with recovery.
 
 ## Known limitations
@@ -295,7 +304,7 @@ Full list, with what has and hasn't been verified: [docs/LIMITATIONS.md](docs/LI
 - The "What I saw" table and the verdict describe one session. They are not a validated assessment and say nothing about retention.
 - BKT parameters are priors, not fitted. Mastery is within-session only; no retention check.
 - Intent parsing for non-maths text is rule-based; it handles the probed cases, not open-ended language. With an LLM, free-text explanations are classified by the model; other intents stay rule-based by design.
-- Rate limiting (in memory, per instance) and the fallback development signing key are not production-grade.
+- Rate limiting (sign-in, turns, voice) is in memory, per instance; one shared account; sessions can't be revoked individually (rotate `AUTH_SECRET` to end all). See [docs/SECURITY.md](docs/SECURITY.md#remaining-limitations-and-risks).
 - Web Speech API: Chrome-family only for input, and Chrome sends audio to Google's speech service.
 - Deterministic wording is templated. It never repeats exactly on a problem, but the set of lines is finite.
 
@@ -319,15 +328,20 @@ Full list, with what has and hasn't been verified: [docs/LIMITATIONS.md](docs/LI
 ## Deploy (Vercel)
 
 ```bash
-vercel
-vercel env add SESSION_SECRET          # required: 32+ random characters
-vercel env add ANTHROPIC_API_KEY       # optional: enables the LLM teaching layer
+npm run --silent auth:hash             # on your machine: hidden prompt → prints only the hash
+npm run --silent auth:secret           # twice: one for AUTH_SECRET, one for SESSION_SECRET
+vercel env add AUTH_USERNAME production
+vercel env add AUTH_PASSWORD_HASH production   # paste the hash (mark Sensitive)
+vercel env add AUTH_SECRET production          # paste (Sensitive)
+vercel env add SESSION_SECRET production       # paste (Sensitive)
+vercel env add ANTHROPIC_API_KEY production    # optional: enables the LLM teaching layer
 vercel --prod
 ```
 
-No database is required. `/api/eval` declares `maxDuration = 300`; on plans with shorter limits, run LLM evals from the CLI.
+No database is required. After deploying, run the checks in [docs/SECURITY.md](docs/SECURITY.md#verifying-a-deployment).
 
 ## Docs
+- [docs/SECURITY.md](docs/SECURITY.md) — sign-in, sessions, what the browser sees, production secrets, the security review and remaining risks
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — teaching policy, deterministic validation, LLM boundaries, sessions, evaluation design
 - [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — what has and hasn't been verified; how to run Policy C
 - [docs/DESIGN.md](docs/DESIGN.md) — v3 interaction design and what changed

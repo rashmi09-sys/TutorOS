@@ -4,9 +4,9 @@ import { stageLabel, stageSub } from "@/lib/stages";
 import Link from "next/link";
 import { helpOptions } from "@/lib/helpOptions";
 import { lessonInfo } from "@/lib/lessons";
-import { MISCONCEPTIONS } from "@/engine/misconceptions";
+import { MISCONCEPTION_LABELS } from "@/engine/misconception-labels";
 import { learningMessage, problemEvidence } from "@/lib/evidence";
-import type { SessionState } from "@/engine/types";
+import type { AlgebraView as SessionState } from "@/engine/view-types";
 import { LessonShell, type LessonAdapter, type Stop } from "./lesson/LessonShell";
 import { Notebook } from "./student/Notebook";
 import { MathLine } from "./student/MathLine";
@@ -150,7 +150,7 @@ function AlgebraProfile({ state }: { state: SessionState }) {
         <ul className="plain">
           {Object.entries(state.misconceptionCounts).map(([id, n]) => (
             <li key={id}>
-              Maybe: {MISCONCEPTIONS[id as keyof typeof MISCONCEPTIONS].label.toLowerCase()} <span className="muted">· seen {n}×{recurring.includes(id as keyof typeof MISCONCEPTIONS) ? " on more than one problem" : ""}</span>
+              Maybe: {MISCONCEPTION_LABELS[id as keyof typeof MISCONCEPTION_LABELS].toLowerCase()} <span className="muted">· seen {n}×{recurring.includes(id as keyof typeof MISCONCEPTION_LABELS) ? " on more than one problem" : ""}</span>
             </li>
           ))}
         </ul>

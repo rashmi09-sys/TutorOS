@@ -16,7 +16,7 @@ class MemoryStorage {
 }
 
 const g = globalThis as unknown as { localStorage?: unknown };
-const stored = (turn: number): StoredSession => ({ state: { version: 1, sessionId: `s${turn}`, turn } as never, stateSig: "sig", traces: [], teacher: null, updatedAt: "2026-10-09T00:00:00Z" });
+const stored = (turn: number): StoredSession => ({ view: { version: 1, sessionId: `s${turn}`, turn } as never, sealed: "s1.opaque", teacher: null, updatedAt: "2026-10-09T00:00:00Z" });
 
 describe("lesson progress storage", () => {
   beforeEach(() => {
@@ -26,9 +26,15 @@ describe("lesson progress storage", () => {
     delete g.localStorage;
   });
 
-  it("keeps the algebra key that existing sessions use, and a separate key per lesson", () => {
-    expect(sessionKey("algebra")).toBe("tutoros.session.v2");
-    expect(sessionKey()).toBe("tutoros.session.v2");
+  it("uses a separate key per lesson, and removes old saves that held the full state and traces", () => {
+    expect(sessionKey("algebra")).toBe("tutoros.session.v3");
+    expect(sessionKey()).toBe("tutoros.session.v3");
+    const ls = g.localStorage as MemoryStorage;
+    ls.setItem("tutoros.session.v2", JSON.stringify({ state: { answer: "5" }, traces: [{ decision: {} }] }));
+    ls.setItem("tutoros.session.physics.v1", "{}");
+    expect(loadSession("algebra")).toBeNull();
+    expect(ls.getItem("tutoros.session.v2")).toBeNull();
+    expect(ls.getItem("tutoros.session.physics.v1")).toBeNull();
     expect(new Set([sessionKey("algebra"), sessionKey("physics"), sessionKey("geometry")]).size).toBe(3);
   });
 
@@ -36,11 +42,11 @@ describe("lesson progress storage", () => {
     saveSession(stored(3), "algebra");
     saveSession(stored(5), "physics");
     saveSession(stored(7), "geometry");
-    expect((loadSession("physics")?.state as { turn: number }).turn).toBe(5);
+    expect((loadSession("physics")?.view as { turn: number }).turn).toBe(5);
     clearSession("physics");
     expect(loadSession("physics")).toBeNull();
-    expect((loadSession("algebra")?.state as { turn: number }).turn).toBe(3);
-    expect((loadSession("geometry")?.state as { turn: number }).turn).toBe(7);
+    expect((loadSession("algebra")?.view as { turn: number }).turn).toBe(3);
+    expect((loadSession("geometry")?.view as { turn: number }).turn).toBe(7);
   });
 
   it("never throws when storage is blocked or corrupt — the lesson just starts fresh", () => {
@@ -51,5 +57,10 @@ describe("lesson progress storage", () => {
     g.localStorage = new MemoryStorage();
     (g.localStorage as MemoryStorage).setItem(sessionKey("physics"), "{not json");
     expect(loadSession("physics")).toBeNull();
+  });
+
+  it("ignores a save without a sealed state", () => {
+    (g.localStorage as MemoryStorage).setItem(sessionKey("algebra"), JSON.stringify({ view: { turn: 3 }, sealed: null }));
+    expect(loadSession("algebra")).toBeNull();
   });
 });

@@ -2,12 +2,13 @@
 
 import { stageDone, stageLabel, stageSub } from "@/lib/stages";
 import { Fragment, memo, useState, type ReactNode } from "react";
-import type { BoardEntry, FocusRole, SessionState } from "@/engine/types";
+import type { BoardEntry, FocusRole } from "@/engine/types";
+import type { AlgebraView as SessionState } from "@/engine/view-types";
 import { Tex } from "../Math";
 import { MathLine } from "./MathLine";
 import { BalanceFigure } from "../lesson/figures";
 import { parseEquation } from "@/engine/algebra";
-import { normalize } from "@/engine/misconceptions";
+import { normalize } from "@/engine/normal";
 
 export interface SpeechProgress {
   turn: number;

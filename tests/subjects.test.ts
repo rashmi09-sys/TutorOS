@@ -3,6 +3,7 @@
  * kernel (ladder, reveal rule, idempotency), the leak guard swept over every reply the templates can make,
  * the structured model reading with a fake provider, and the API route.
  */
+import { authedPost } from "./helpers/auth";
 import { describe, expect, it } from "vitest";
 import { POST as turn } from "@/app/api/turn/route";
 import { arithmeticClaims, normalizeText, numbersIn } from "@/engine/subjects/text";
@@ -233,15 +234,17 @@ describe("model reading in the subject lessons", () => {
 });
 
 describe("/api/turn with lessons", () => {
-  const req = (body: unknown, ip: string) => new Request("http://x/api/turn", { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": ip }, body: JSON.stringify(body) });
-  it("runs a geometry lesson with signed state, and refuses a state from another lesson", async () => {
-    const d1 = await (await turn(req({ lesson: "geometry", state: null, event: { type: "start", id: "evt_geo001" } }, "10.1.0.1"))).json();
-    expect(d1.state.lesson).toBe("geometry");
-    expect(d1.trace.lesson).toBe("geometry");
-    const r2 = await turn(req({ lesson: "geometry", state: d1.state, stateSig: d1.stateSig, event: { type: "text", text: "I'm stuck", via: "keyboard", id: "evt_geo002" } }, "10.1.0.1"));
+  const req = (body: unknown, ip: string) => authedPost("http://x/api/turn", body, { "x-forwarded-for": ip });
+  it("runs a geometry lesson from sealed state, hides the answer, and refuses a state from another lesson", async () => {
+    const d1 = await (await turn(await req({ lesson: "geometry", sealed: null, event: { type: "start", id: "evt_geo001" } }, "10.1.0.1"))).json();
+    expect(d1.view.lesson).toBe("geometry");
+    expect(d1.view.problems[0].answer).toBeUndefined();
+    expect(d1.view.problems[0].answerText).toBeUndefined();
+    expect(d1.view.problems[0].prompt).toBeTruthy();
+    const r2 = await turn(await req({ lesson: "geometry", sealed: d1.sealed, event: { type: "text", text: "I'm stuck", via: "keyboard", id: "evt_geo002" } }, "10.1.0.1"));
     expect(r2.status).toBe(200);
-    expect((await r2.json()).trace.decision.stage).toBe("NOTICE");
-    const cross = await turn(req({ lesson: "algebra", state: d1.state, stateSig: d1.stateSig, event: { type: "text", text: "x = 5", via: "keyboard" } }, "10.1.0.1"));
-    expect(cross.status).toBe(400);
+    expect((await r2.json()).view.transcript.at(-1).stage).toBe("NOTICE");
+    const cross = await turn(await req({ lesson: "algebra", sealed: d1.sealed, event: { type: "text", text: "x = 5", via: "keyboard" } }, "10.1.0.1"));
+    expect(cross.status).toBe(409);
   });
 });

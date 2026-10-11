@@ -1,5 +1,6 @@
 "use client";
 
+import { signOut } from "@/lib/auth/client";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTutorSession, type TeacherInfo } from "@/lib/useTutorSession";
@@ -274,7 +275,7 @@ export function LessonShell<S extends LessonStateBase>({ adapter }: { adapter: L
             </button>
           </div>
           <p className="welcome-fine">
-            {ttsSupported === false ? "This browser can't read aloud, so the lesson is text only. " : "Nothing plays until you press Start. "}The microphone stays off until you tap it. No sign-up — your work stays in this browser. <Link href="/">All lessons</Link>
+            {ttsSupported === false ? "This browser can't read aloud, so the lesson is text only. " : "Nothing plays until you press Start. "}The microphone stays off until you tap it. Your work stays in this browser until you sign out. <Link href="/">All lessons</Link>
           </p>
           {error && <p className="error">{error}</p>}
         </main>
@@ -491,6 +492,7 @@ function Menu({ teacher, onRestart, onDrawer, readAloud }: MenuProps & { teacher
           <button className="menu-item" onClick={act(() => onDrawer("profile"))}>My progress</button>
           <button className="menu-item" onClick={act(onRestart)}>Restart</button>
           <Link className="menu-item" href="/">All lessons</Link>
+          <button className="menu-item" onClick={act(() => void signOut())}>Sign out</button>
           <div className="menu-sep" role="presentation" />
           <p className="menu-label">Sound</p>
           <label className="menu-toggle">
@@ -499,7 +501,7 @@ function Menu({ teacher, onRestart, onDrawer, readAloud }: MenuProps & { teacher
           </label>
           {teacher && (
             <>
-              <p className="menu-fine">{teacher.mode === "deterministic" ? "Running without a language model: I understand maths, numbers and a set list of phrases. Every answer is checked exactly." : `Language model: ${teacher.name}. It helps read your words; every answer is still checked exactly.`}</p>
+              <p className="menu-fine">{teacher.mode === "deterministic" ? "Running without a language model: I understand maths, numbers and a set list of phrases. Every answer is checked exactly." : "A language model helps read your words; every answer is still checked exactly."}</p>
             </>
           )}
         </div>

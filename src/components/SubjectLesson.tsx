@@ -5,7 +5,8 @@ import Link from "next/link";
 import type { HelpOption } from "@/lib/helpOptions";
 import { lessonInfo } from "@/lib/lessons";
 import type { Message } from "@/engine/types";
-import type { SubjectLessonId, SubjectProblem, SubjectState } from "@/engine/subjects/types";
+import type { SubjectLessonId } from "@/engine/subjects/types";
+import type { SubjectProblemView as SubjectProblem, SubjectView as SubjectState } from "@/engine/view-types";
 import { LessonShell, type LessonAdapter, type Stop } from "./lesson/LessonShell";
 import { learningMessage, subjectEvidence } from "@/lib/evidence";
 import { ForceExplorer, ForceFigure, TriangleExplorer, TriangleFigure } from "./lesson/figures";
@@ -24,7 +25,7 @@ function subjectHelp(s: SubjectState): HelpOption[] {
   if (s.phase === "COMPLETE") return [];
   const last = [...s.transcript].reverse().find((m) => m.role === "tutor");
   if (last?.action === "WAIT") return [];
-  if (!last || last.rule === "S0_PRESENT" || /_CORRECT$/.test(last.rule ?? "")) return [HINT, STUCK];
+  if (!last || last.cue === "fresh" || last.cue === "ans_done") return [HINT, STUCK];
   if (last.stage === "NOTICE") return [HINT, DIFFERENT];
   if (last.stage === "THINK") return [DIFFERENT, HINT, WHY];
   if (last.stage === "TRY") return [WHY, DIFFERENT, STUCK];
@@ -36,7 +37,6 @@ function presentedAt(s: SubjectState): number[] {
   return s.problems.map((p) => s.transcript.find((m) => m.role === "tutor" && m.text.includes(p.prompt))?.turn ?? Infinity);
 }
 
-const NOT_ANSWERS = /(CONCEPT|WHICH_NUMBER|BOUNDED_CHECK|SIZE_TOO|CLARIFY)/;
 type Mark = "ok" | "part" | "bad";
 function answersFor(s: SubjectState, i: number): { text: string; mark: Mark; via?: string }[] {
   const at = presentedAt(s);
@@ -45,9 +45,9 @@ function answersFor(s: SubjectState, i: number): { text: string; mark: Mark; via
   for (const m of s.transcript) {
     if (m.role !== "student" || !(m.turn > from && m.turn <= to)) continue;
     const reply = s.transcript.find((x) => x.role === "tutor" && x.turn === m.turn);
-    const rule = reply?.rule ?? "";
-    if (!/^(G|P)_/.test(rule) || NOT_ANSWERS.test(rule)) continue;
-    const mark: Mark = /(_CORRECT|_SUB_RIGHT|_SUB_SOLVED)$/.test(rule) ? "ok" : /(RIGHT_FLAWED|NO_DIRECTION|WRONG_DIRECTION)/.test(rule) ? "part" : "bad";
+    const cue = reply?.cue;
+    if (cue !== "ans_done" && cue !== "ans_ok" && cue !== "ans_part" && cue !== "ans_bad") continue;
+    const mark: Mark = cue === "ans_done" || cue === "ans_ok" ? "ok" : cue === "ans_part" ? "part" : "bad";
     out.push({ text: m.text, mark, via: m.via });
   }
   return out;

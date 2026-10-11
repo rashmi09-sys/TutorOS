@@ -5,7 +5,7 @@ Every tutor line quoted below was produced by the engine in deterministic mode (
 ## Before recording (5 minutes)
 
 1. Run it locally with the Google voice: `gcloud auth application-default login` (once), then put `GOOGLE_TTS_ENABLED=true` and `GOOGLE_CLOUD_PROJECT=<your project id>` in `.env.local`, then `npm run build && npm start`. Check that `npm run tts:smoke` succeeds first. (The live URL shows an older version until you deploy.)
-2. Chrome, one window, about 1440 px wide. On the home page, press **Start again** on the Algebra card if it shows.
+2. Chrome, one window, about 1440 px wide. Sign in before recording (the sign-in page is the only thing visible without a session; don't show the password on camera). On the home page, press **Start again** on the Algebra card if it shows.
 3. Decide on sound. With the Sulafat voice on, let the tutor speak a line or two and talk over the rest; or switch **Sound off** on the welcome screen and narrate everything.
 4. Inputs to paste: `Bro, I hate algebra` · `I don't know` · `why?` · `I don't know` · `I don't know` · `3x = 15` · `x = 5` · `4x = 16` · `x = 4`.
 5. Do one dry run, then **Menu → Restart**, then go back to the home page.
@@ -36,7 +36,7 @@ If there's time, solve the challenge and show the **What I saw** table: *"…Tha
 
 **Lesson (0:20–1:38).** Narrate lightly as in the table. Worth saying: "It remembers how many times I've been stuck and what it already tried — a smaller question, an analogy, then a picture — so it never repeats itself." And at the hand-off: "Solving one with help isn't evidence. So: try it yourself, then a challenge with a twist."
 
-**Engineering (1:38–2:15).** "Each turn is one function: the signed lesson state and my message in; the new state, a reply and a trace out. The maths is checked by an exact parser, never a model. A rule table decides which teaching moves are allowed, reading a small teaching memory — how often I've been stuck, which approaches were tried, whether I asked for the answer. A language model, when configured, can only choose among those moves and word them; a guard blocks answer leaks and wrong arithmetic, and an anti-repetition check stops it saying the same thing twice. The whiteboard and the voice come from the same turn. Over ninety scripted-student scenarios run against the real engine."
+**Engineering (1:38–2:15).** "Each turn is one function: the sealed lesson state and my message in; the new state, a reply and a trace out — the trace stays on the server. The maths is checked by an exact parser, never a model. A rule table decides which teaching moves are allowed, reading a small teaching memory — how often I've been stuck, which approaches were tried, whether I asked for the answer. A language model, when configured, can only choose among those moves and word them; a guard blocks answer leaks and wrong arithmetic, and an anti-repetition check stops it saying the same thing twice. The whiteboard and the voice come from the same turn. Over ninety scripted-student scenarios run against the real engine."
 
 **Trade-offs (2:15–2:45).** "What you saw is deterministic — no model call — so every line is predictable and testable, but the wording is templated. The voice is Google's Chirp 3 HD, behind a server route with spending caps and the browser voice as a fallback. It's turn by turn: no streaming and no word-level sync yet. Next I'd add streaming speech with barge-in, evaluate the model path for real, and retest students days later — the only honest measure of learning."
 

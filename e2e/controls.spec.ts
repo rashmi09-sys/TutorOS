@@ -1,19 +1,19 @@
 import type { Page } from "@playwright/test";
-import { expect, openMenu, test } from "./fixtures";
+import { expect, openMenu, test, signInVia } from "./fixtures";
 
 /**
  * Release audit: the complete student journey and every visible control, in a real browser,
  * against the real server. Voice input cannot be exercised headlessly (no microphone); the test
  * checks that its control degrades honestly instead.
  */
-const KEY = "tutoros.session.v2";
-const turnNow = (page: Page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.state?.turn ?? 0, KEY);
+const KEY = "tutoros.session.v3";
+const turnNow = (page: Page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.view?.turn ?? 0, KEY);
 
 async function say(page: Page, text: string) {
   const before = await turnNow(page);
   await page.getByLabel("Your answer or message").fill(text);
   await page.getByLabel("Your answer or message").press("Enter"); // keyboard submit
-  await page.waitForFunction(([k, b]) => (JSON.parse(localStorage.getItem(k as string) ?? "null")?.state?.turn ?? 0) > (b as number), [KEY, before]);
+  await page.waitForFunction(([k, b]) => (JSON.parse(localStorage.getItem(k as string) ?? "null")?.view?.turn ?? 0) > (b as number), [KEY, before]);
   return page.locator(".note.active");
 }
 
@@ -68,8 +68,9 @@ test("complete student journey and every visible control", async ({ page }) => {
   await expect(page.locator(".nb-row.given .term.focus")).toHaveCount(2);
 
   // Quick replies
+  const beforeStuck = await turnNow(page);
   await page.getByRole("button", { name: "I'm stuck" }).click();
-  await page.waitForFunction((k) => JSON.parse(localStorage.getItem(k)!).state.transcript.at(-1).rule.includes("_L3"), KEY);
+  await page.waitForFunction(([k, b]) => (JSON.parse(localStorage.getItem(k as string) ?? "null")?.view?.turn ?? 0) > (b as number), [KEY, beforeStuck]);
   await expect(page.locator(".note.active")).toContainText("we get 3x = 15");
 
   // Challenge the tutor's explanation → computed re-check of what was shown
@@ -170,8 +171,9 @@ test("cancel a turn while it is being checked: nothing is applied and the line s
   expect(await turnNow(page)).toBe(before);
 });
 
-test("reduced motion: animations are disabled", async ({ browser }) => {
+test("reduced motion: animations are disabled", async ({ browser, baseURL }) => {
   const ctx = await browser.newContext({ reducedMotion: "reduce" });
+  await signInVia(ctx, baseURL!);
   const page = await ctx.newPage();
   await page.goto("/learn/algebra");
   await page.evaluate(() => localStorage.clear());

@@ -2,14 +2,29 @@
 
 Status as of v6 (teaching memory and strategy ladder, new actions, interactive whiteboard, optional cloud voice, three-stage lessons), 10 Oct 2026. "Verified" means a check was executed in this repository and passed. Nothing below is estimated.
 
-## Verified
+## Verified in v8 (sign-in and hiding internals), 11 Oct 2026
+
+| Area | How | Result |
+|---|---|---|
+| Types, lint | `npm run typecheck`, `npm run lint` | clean; 0 errors, 0 warnings |
+| Unit + integration | `npm test` | 374 / 374 passed, 20 files: the 341 earlier tests (the four route/storage files updated for sealed state and sign-in) plus `tests/auth.test.ts` (22), `tests/xss.test.ts` (7) and new route checks |
+| Browser | `npm run test:e2e` against the production build, signed in with a throwaway account | 56 / 56 passed, two consecutive runs (46 earlier + 10 in `e2e/auth.spec.ts`) |
+| Scenario evals | `npm run eval` | unchanged: B 59/59 (269/269), A 9/59 (30 leak), C not run, G 17/17, P 16/16 |
+| Visual audit | `scripts/ui-audit.ts`, now including the sign-in page with and without its error | no layout defects found |
+| Real credentials | the configured hash in `.env.local`, production server, curl | correct password → 200 + cookie (Secure, HttpOnly, SameSite=Lax); wrong password or lowercase username → the same 401; signed-in `/api/tts` reaches the Google client (here `502 upstream_auth`, no credentials in this sandbox); signed-out → 401 |
+| Secrets | grep of `.next/static`, `.next/`, tracked and untracked files, `git log -p` | no password, hash, secrets, env-var names, rule names, templates or prompts; no source maps |
+| Dependencies | `npm audit` | no runtime advisories; 4 high in a dev-only lint chain with no fix |
+
+Not verified: sign-in on the deployed Vercel app (nothing has been deployed), and the Google voice after sign-in with real credentials (none here). See [SECURITY.md](SECURITY.md#verifying-a-deployment) for the post-deploy checks.
+
+## Verified in v6/v7 (not all re-run in v8)
 
 | Area | How | Result |
 |---|---|---|
 | Types | `npm run typecheck` | clean |
 | Lint | `npm run lint` (ESLint 9: typescript-eslint, react-hooks, next) | 0 errors, 0 warnings |
 | Engine, understanding of moves in words, voice state machine, tutor speech, language rules, LLM control logic (incl. structured interpretation), server routes | `npm test` (vitest) | 332 / 332 passed, 18 files (incl. `tests/teaching.test.ts`: the twelve teaching-behaviour cases; `tests/tts.test.ts`: the optional cloud voice with a fake Google endpoint) |
-| Full student journey, every visible control, voice interaction with mocked speech APIs, the reported BODMAS conversation spoken end to end with its recorded trace, Edit before sending — in a real browser against the production build | `npm run test:e2e` (Playwright, Chromium) | 46 / 46 passed, 7 files, two consecutive runs (includes the Grade 7 journey, the whiteboard interactions in `e2e/whiteboard.spec.ts`, and navigation and progress persistence across all three lessons) |
+| Full student journey, every visible control, voice interaction with mocked speech APIs, the reported BODMAS conversation spoken end to end, Edit before sending — in a real browser against the production build | `npm run test:e2e` (Playwright, Chromium) | 46 / 46 passed, 7 files, two consecutive runs (includes the Grade 7 journey, the whiteboard interactions in `e2e/whiteboard.spec.ts`, and navigation and progress persistence across all three lessons) |
 | Teaching behaviour on 59 scripted algebra scenarios | `npm run eval` | B 59/59 scenarios, 269/269 assertions, 0 answer leaks, 0 false maths, context 9/9, language 7/7, repetition 6/6. A (answer-giver control) 9/59, 30 scenarios leak the answer. |
 | Geometry and physics lessons | `npm run eval` (G, P) | G 17/17 scenarios, 59/59 checks; P 16/16, 53/53; 0 leaks, 0 model calls |
 | Production build | `npm run build` | passes; no key names in the client bundle (grep of `.next/static`) |
@@ -89,7 +104,7 @@ Expect 50 scenarios × several model calls each. With a small model this is cent
 - **Mastery model**: BKT priors are conventional, not fitted. Mastery is within one session; no retention check.
 - **Scope**: one skill (two-step linear equations, integer answers), one fixed guided problem (`3x + 5 = 20`), generated transfer problems.
 - **Conversation memory** is short: the tutor's last question, the student's last proposal (repeats within four turns) and a repeat count. It does not summarise longer history.
-- **Production hardening**: rate limiting is in-memory per instance; without `SESSION_SECRET` a fixed dev key signs sessions (`/api/health` says `degraded`). No server-side persistence, auth, moderation of free text, or escalation path to an adult.
+- **Production hardening**: one shared sign-in account (no per-person accounts or roles); sessions are stateless tokens (rotate `AUTH_SECRET` to end them all); rate limiting (sign-in, turns, voice) is in-memory per instance. No server-side persistence, moderation of free text, or escalation path to an adult. Details: [SECURITY.md](SECURITY.md#remaining-limitations-and-risks).
 - **Child-data compliance** (DPDP Act, COPPA, GDPR-K) has not been reviewed.
 - **Accessibility**: automated contrast, keyboard and reduced-motion checks only; no screen-reader or user testing.
 

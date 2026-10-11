@@ -3,15 +3,18 @@
  * the server tests inject a fake client with the same synthesizeSpeech() shape as the official library.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { sessionCookie } from "./helpers/auth";
 import { POST as tts } from "@/app/api/tts/route";
-import { GET as health } from "@/app/api/health/route";
+import { GET as healthRoute } from "@/app/api/health/route";
 import { classifyError, resetTtsState, setTtsClientForTests, ttsConfig, languageCodeOf, type SynthClient } from "@/lib/server/tts";
 import { Speaker, enableCloudVoice, type SynthLike, type UtterLike } from "../src/lib/voice/speaker";
 import type { AudioLike } from "../src/lib/voice/cloud-voice";
 
 let ipN = 0;
-const req = (body: unknown, ip = `10.77.0.${++ipN}`) =>
-  new Request("http://x/api/tts", { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": ip }, body: typeof body === "string" ? body : JSON.stringify(body) });
+const COOKIE = await sessionCookie();
+const req = (body: unknown, ip = `10.77.0.${++ipN}`, cookie: string | null = COOKIE) =>
+  new Request("http://x/api/tts", { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": ip, ...(cookie ? { cookie } : {}) }, body: typeof body === "string" ? body : JSON.stringify(body) });
+const health = () => healthRoute(new Request("http://x/api/health", { headers: { cookie: COOKIE } }));
 
 const MP3 = new Uint8Array([0x49, 0x44, 0x33, 1, 2, 3]);
 type Req = Parameters<SynthClient["synthesizeSpeech"]>;
@@ -67,6 +70,18 @@ describe("config", () => {
   });
 });
 
+describe("/api/tts and /api/health require a session", () => {
+  it("401 without a cookie, with a forged cookie, or with an expired one — and Google is never called", async () => {
+    vi.stubEnv("GOOGLE_TTS_ENABLED", "true");
+    const calls = fakeGoogle();
+    expect((await tts(req({ text: "Hello." }, undefined, null))).status).toBe(401);
+    expect((await tts(req({ text: "Hello." }, undefined, await sessionCookie({ secret: "x".repeat(40) })))).status).toBe(401);
+    expect((await tts(req({ text: "Hello." }, undefined, await sessionCookie({ ttlS: -10 })))).status).toBe(401);
+    expect((await healthRoute(new Request("http://x/api/health"))).status).toBe(401);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("/api/tts when not enabled", () => {
   it("returns 503 {enabled:false, fallback:'browser'} and never touches the client", async () => {
     const calls = fakeGoogle();
@@ -77,7 +92,7 @@ describe("/api/tts when not enabled", () => {
   });
   it("health says browser voice", async () => {
     const d = await (await health()).json();
-    expect(d.voice).toMatchObject({ provider: "browser", voice: null, auth: null });
+    expect(d.voice).toEqual({ provider: "browser", voice: null });
   });
 });
 
@@ -97,7 +112,7 @@ describe("/api/tts when enabled (fake Google client)", () => {
     expect(request).toEqual({ input: { text: "3 x plus 5 equals 20" }, voice: { languageCode: "en-US", name: "en-US-Chirp3-HD-Sulafat" }, audioConfig: { audioEncoding: "MP3", speakingRate: 0.96 } });
     expect(options).toMatchObject({ maxRetries: 0, timeout: 8000 });
     const d = await (await health()).json();
-    expect(d.voice).toMatchObject({ provider: "google-chirp3-hd", voice: "en-US-Chirp3-HD-Sulafat", auth: "adc" });
+    expect(d.voice).toEqual({ provider: "google-chirp3-hd", voice: "en-US-Chirp3-HD-Sulafat", limits: { maxCharsPerRequest: 1000 } });
   });
 
   it("base64 audio (REST transport) is decoded too", async () => {
@@ -112,8 +127,8 @@ describe("/api/tts when enabled (fake Google client)", () => {
     vi.stubEnv("GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID", "secret-provider");
     vi.stubEnv("GCP_SERVICE_ACCOUNT_EMAIL", "tts@p.iam.gserviceaccount.com");
     const txt = JSON.stringify(await (await health()).json());
-    expect(txt).toContain('"auth":"vercel-oidc"');
-    for (const s of ["987654321", "secret-pool", "secret-provider", "gserviceaccount"]) expect(txt).not.toContain(s);
+    expect(txt).toContain('"provider":"google-chirp3-hd"');
+    for (const s of ["987654321", "secret-pool", "secret-provider", "gserviceaccount", "vercel-oidc", "auth"]) expect(txt).not.toContain(s);
   });
 
   it("413 on over-long text, with no upstream call", async () => {

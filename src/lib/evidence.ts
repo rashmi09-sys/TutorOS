@@ -1,10 +1,9 @@
-import type { SessionState } from "@/engine/types";
-import type { SubjectState } from "@/engine/subjects/types";
+import type { AlgebraView as SessionState, SubjectView as SubjectState } from "@/engine/view-types";
 
 /** guided practice → independent practice (same idea, new numbers) → transfer (a new twist). */
 export type Stage = "guided" | "independent" | "transfer";
 const stageAt = (i: number): Stage => (i === 0 ? "guided" : i === 1 ? "independent" : "transfer");
-import { MISCONCEPTIONS } from "@/engine/misconceptions";
+import { MISCONCEPTION_LABELS } from "@/engine/misconception-labels";
 
 /**
  * What was observed on each algebra problem in this session — only things the session actually recorded:
@@ -46,7 +45,7 @@ export function problemEvidence(state: SessionState): ProblemEvidence[] {
     const solved = board.some((b) => b.status === "final");
     const independent = p.role === "transfer" && solved && obs.some((o) => o.kind === "transfer" && o.correct && !o.assisted);
     const ids = Array.from(new Set((state.misconceptionHistory ?? []).filter((m) => m.problemId === p.id).map((m) => m.id)));
-    const noticed = ids.map((id) => MISCONCEPTIONS[id].label);
+    const noticed = ids.map((id) => MISCONCEPTION_LABELS[id]);
     const repeatedMistake = ids.some((id) => seenBefore.has(id));
     ids.forEach((id) => seenBefore.add(id));
     return { problemId: p.id, text: p.text, role: p.role, stage: stageAt(i), repeatedMistake, steps, wrongLines, hints, firstTry: p.role !== "transfer" || !first ? null : first.correct ? "right" : first.note?.startsWith("asked for help") ? "asked for help first" : "not right", solved, independent, noticed };

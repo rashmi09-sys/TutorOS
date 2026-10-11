@@ -26,7 +26,8 @@
 
   Every refusal carries `fallback: "browser"`. Logs record the category, status code, character count and time; they never record text, credentials or error messages.
 - **Client:**
-  - **Turning it on:** the page asks `/api/health` once. If it reports the Google voice, the page's single speech controller uses `/api/tts` from then on.
+  - **Turning it on:** the page asks `/api/health` once (signed in). If it reports the Google voice, the page's single speech controller uses `/api/tts` from then on.
+  - **Access:** both routes require a signed-in session (401 otherwise), so nobody outside can spend the TTS budget ([SECURITY.md](SECURITY.md)).
   - **What is spoken:** exactly the tutor message on screen. Maths is spoken as words (`3x + 5 = 20` → "3 x plus 5 equals 20"), and nothing else is added.
   - **Timing:** each turn is spoken once, when it appears — the same moment the whiteboard updates for it.
   - **No overlap:** a new turn cancels the previous one, whether its audio is still downloading or already playing. Sending a line, tapping the mic, Stop, turning sound off or leaving the page all stop it.
@@ -57,7 +58,7 @@ GOOGLE_TTS_ENABLED=true
 GOOGLE_CLOUD_PROJECT=project-c6fd5340-c2ad-481e-a43
 ENV
 GOOGLE_TTS_ENABLED=true GOOGLE_CLOUD_PROJECT=project-c6fd5340-c2ad-481e-a43 npm run tts:smoke   # writes a short MP3 to your temp folder
-npm run dev        # /api/health → voice.provider "google-chirp3-hd", auth "adc"
+npm run dev        # sign in, then /api/health → voice.provider "google-chirp3-hd"
 ```
 
 Your user account needs permission to call Text-to-Speech on that project; the owner role does. If the smoke test reports `auth`, re-run the login and check the quota project.
@@ -125,7 +126,7 @@ The in-app limits are per instance. For a real ceiling:
 
 ### 6. Verify after deploying
 
-- `curl https://<your-domain>/api/health` should show `"voice": {"provider": "google-chirp3-hd", "auth": "vercel-oidc", …}`.
+- `curl https://<your-domain>/api/health` must answer `401` (signed out). Signed in (open it in the browser after signing in), it shows `"voice": {"provider": "google-chirp3-hd", …}`.
 - Play a lesson with sound on.
 - If the tutor still sounds like the browser voice, the function logs show `evt: tts` with `result: "auth"`. The usual causes are a wrong team slug in the issuer or condition, the wrong environment in the principal, or OIDC federation not enabled.
 

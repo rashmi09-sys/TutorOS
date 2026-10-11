@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { clientKey, rateLimit } from "@/lib/server/rate-limit";
 import { logEvent } from "@/lib/server/log";
+import { currentUser, unauthorized } from "@/lib/auth/server";
 import { cacheGet, cacheKey, cachePut, effectiveRate, refundBudget, reserveBudget, synthesize, ttsConfig } from "@/lib/server/tts";
 
 /**
@@ -33,6 +34,8 @@ function audio(bytes: Uint8Array, cached: boolean) {
 }
 
 export async function POST(req: Request) {
+  // Billable: only a signed-in session may use it (the middleware checks too; this is defence in depth).
+  if (!(await currentUser(req))) return unauthorized();
   const cfg = ttsConfig();
   if (!cfg.enabled) return json({ enabled: false, fallback: "browser" }, 503);
 

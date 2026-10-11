@@ -1,13 +1,14 @@
 import type { Page } from "@playwright/test";
 import { expect, test, startWithoutSound } from "./fixtures";
+import { solveLinear } from "./solve";
 
 /**
  * Navigation and progress persistence across the home page and the three lessons:
  * the "All lessons" button, the logo, browser back/forward, Continue learning, reload, and Start again.
  */
 
-const KEY: Record<string, string> = { algebra: "tutoros.session.v2", physics: "tutoros.session.physics.v1", geometry: "tutoros.session.geometry.v1" };
-const stateOf = (page: Page, lesson: string) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.state ?? null, KEY[lesson]);
+const KEY: Record<string, string> = { algebra: "tutoros.session.v3", physics: "tutoros.session.physics.v2", geometry: "tutoros.session.geometry.v2" };
+const stateOf = (page: Page, lesson: string) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.view ?? null, KEY[lesson]);
 const card = (page: Page, title: string) => page.locator(".lesson-card", { hasText: title });
 
 async function fresh(page: Page) {
@@ -62,7 +63,8 @@ test("full journey: algebra → wrong answer → hint → home → resume → co
   await say(page, "x = 5");
   for (let i = 0; i < 2; i++) {
     const s = await stateOf(page, "algebra");
-    await say(page, `x = ${s.problems[s.current].answer}`);
+    expect(s.problems[s.current].answer).toBeUndefined(); // never sent before it is reached
+    await say(page, `x = ${solveLinear(s.problems[s.current])}`);
   }
   await expect(page.locator(".result")).toBeVisible();
   expect((await stateOf(page, "algebra")).phase).toBe("COMPLETE");

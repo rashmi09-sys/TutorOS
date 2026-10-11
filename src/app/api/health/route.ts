@@ -1,26 +1,23 @@
 import { NextResponse } from "next/server";
-import { maxModelCallsFromEnv, providerInfo } from "@/engine/llm/factory";
-import { signingMode } from "@/lib/server/session-token";
-import { ttsPublicInfo } from "@/lib/server/tts";
+import { providerInfo } from "@/engine/llm/factory";
+import { ttsConfig } from "@/lib/server/tts";
+import { currentUser, unauthorized } from "@/lib/auth/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+/**
+ * What the signed-in page needs to know: which teacher and which voice are active. Nothing else — no
+ * versions, keys, limits, signing modes or provider details. Requires a session.
+ */
+export async function GET(req: Request) {
+  if (!(await currentUser(req))) return unauthorized();
   const p = providerInfo();
-  const signing = signingMode();
+  const tts = ttsConfig();
   return NextResponse.json(
     {
       ok: true,
-      status: signing === "configured" ? "ok" : "degraded",
-      version: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "dev",
-      teacher: p.configured ? { mode: "llm", provider: p.provider, model: p.model } : { mode: "deterministic", provider: null, model: null },
-      pricingConfigured: p.pricingConfigured,
-      sessionSigning: signing === "configured" ? "configured" : "dev-default key — set SESSION_SECRET (≥32 chars) in production",
-      rateLimiting: "in-memory, per instance",
-      // Model limits (shown in the Engineer View). Only meaningful when a provider is configured.
-      limits: { timeoutMs: Number(process.env.LLM_TIMEOUT_MS) || 8000, maxModelCallsPerSession: maxModelCallsFromEnv(), retries: 1 },
-      // Read-aloud voice: Google Chirp 3 HD when GOOGLE_TTS_ENABLED=true (auth mode and limits only — never credentials).
-      voice: ttsPublicInfo(),
+      teacher: p.configured ? { mode: "llm", name: "language model" } : { mode: "deterministic", name: "deterministic" },
+      voice: tts.enabled ? { provider: "google-chirp3-hd", voice: tts.voice, limits: { maxCharsPerRequest: tts.maxCharsPerRequest } } : { provider: "browser", voice: null },
     },
     { headers: { "cache-control": "no-store" } },
   );

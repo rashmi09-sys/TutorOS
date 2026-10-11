@@ -1,14 +1,15 @@
 import type { Page } from "@playwright/test";
-import { expect, openMenu, readAloudOff, test, startWithoutSound } from "./fixtures";
+import { expect, openMenu, readAloudOff, test, startWithoutSound, signInVia } from "./fixtures";
 import { mockSpeech } from "./speech-mock";
+import { solveNetForce, solveTriangle } from "./solve";
 
 /**
  * The home screen and the geometry and physics lessons in a real browser against the real server. Answers to random check problems are read from the signed state the page holds,
  * exactly as a student who knows the answer would type them.
  */
 
-const key = (lesson: string) => `tutoros.session.${lesson}.v1`;
-const stateOf = (page: Page, lesson: string) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.state, key(lesson));
+const key = (lesson: string) => `tutoros.session.${lesson}.v2`;
+const stateOf = (page: Page, lesson: string) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.view, key(lesson));
 
 async function say(page: Page, text: string) {
   const before = (await page.locator(".msg.tutor").count()) as number;
@@ -60,9 +61,10 @@ test("geometry: misconception, help ladder, correct answer, next question, explo
   for (const m of await page.locator(".msg.tutor").allTextContents()) expect(m).not.toMatch(/\b75\b/);
   await expect(await say(page, "180 - 65 - 40 = 75")).toContainText("Yes — 75°");
   await expect(page.locator(".sp-step")).toContainText("Question 2 of 3");
-  // A check problem: answered from the state, as a student who knows it would.
+  // A check problem: worked out from the question, as a student who knows it would. (The page holds no answer.)
   const st = await stateOf(page, "geometry");
-  await say(page, String(st.problems[1].answer.value));
+  expect(st.problems[1].answer).toBeUndefined();
+  await say(page, String(solveTriangle(st.problems[1])));
   await expect(page.locator(".sp-step")).toContainText("Question 3 of 3");
   await expect(page.locator(".rail .pip.yes")).toHaveCount(1);
   // Explorer: the angles change, the total doesn't.
@@ -88,10 +90,12 @@ test("physics: added forces, size without direction, spoken answer, closed outco
   await page.getByRole("button", { name: "Done — send what I said" }).click();
   await expect(page.locator(".note.active")).toContainText("Yes. 12 N − 8 N = 4 N");
   await expect(page.locator(".sp-past")).toHaveCount(1);
-  // Jump to the last question by answering the check from the state.
+  // Jump to the last question by answering the check, worked out from the question itself.
   const st = await stateOf(page, "physics");
   const p1 = st.problems[1];
-  await say(page, `${p1.answer.value} N to the ${p1.answer.direction}`);
+  expect(p1.answer).toBeUndefined();
+  const a1 = solveNetForce(p1);
+  await say(page, `${a1.value} N to the ${a1.direction}`);
   const p2 = (await stateOf(page, "physics")).problems[2];
   if (p2.kind === "balanced-moving") {
     await expect(await say(page, "it turns into a rocket")).toContainText("I can check");
@@ -105,18 +109,20 @@ test("physics: added forces, size without direction, spoken answer, closed outco
   for (const m of await page.locator(".msg.tutor").allTextContents()) expect(m).not.toMatch(/keeps rolling at 2 m\/s|starts? (to )?mov\w* (to the )?(left|right)/);
 });
 
-test("the engineering console is gone: no links to it, and its routes are not served", async ({ page, request }) => {
+test("the engineering console is gone: no links to it, and its routes are not served", async ({ page, baseURL }) => {
+  const request = page.request; // signed in, like the page
   await page.goto("/");
   await expect(page.getByText(/Engineer view/i)).toHaveCount(0);
   await open(page, "geometry");
   await openMenu(page);
   await expect(page.getByRole("group", { name: "Lesson menu" }).getByText(/Engineer/i)).toHaveCount(0);
   for (const path of ["/console", "/console?lesson=algebra"]) expect((await request.get(path)).status(), path).toBe(404);
-  expect((await request.post("/api/eval", { data: { suites: ["B"] } })).status()).toBe(404);
+  expect((await request.post("/api/eval", { data: { suites: ["B"] }, headers: { origin: new URL(baseURL!).origin } })).status()).toBe(404);
 });
 
-test("phone width: home and lessons don't scroll sideways", async ({ browser }) => {
+test("phone width: home and lessons don't scroll sideways", async ({ browser, baseURL }) => {
   const ctx = await browser.newContext({ viewport: { width: 360, height: 760 } });
+  await signInVia(ctx, baseURL!);
   const page = await ctx.newPage();
   for (const path of ["/", "/learn/algebra", "/learn/geometry", "/learn/physics"]) {
     await page.goto(path);

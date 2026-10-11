@@ -1,13 +1,13 @@
 import type { Page } from "@playwright/test";
-import { expect, openMenu, readAloudOff, test } from "./fixtures";
+import { expect, openMenu, readAloudOff, test, signInVia } from "./fixtures";
 
-const turnNow = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem("tutoros.session.v2") ?? "null")?.state?.turn ?? 0);
+const turnNow = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem("tutoros.session.v3") ?? "null")?.view?.turn ?? 0);
 
 async function say(page: Page, text: string) {
   const before = await turnNow(page);
   await page.getByLabel("Your answer or message").fill(text);
   await page.getByRole("button", { name: "Send" }).click();
-  await page.waitForFunction((b) => (JSON.parse(localStorage.getItem("tutoros.session.v2") ?? "null")?.state?.turn ?? 0) > b, before);
+  await page.waitForFunction((b) => (JSON.parse(localStorage.getItem("tutoros.session.v3") ?? "null")?.view?.turn ?? 0) > b, before);
   return page.locator(".note.active");
 }
 
@@ -68,16 +68,19 @@ test("the tutor responds to what the student actually says", async ({ page }) =>
   expect(await opts.count()).toBeGreaterThanOrEqual(2);
   expect(await opts.count()).toBeLessThanOrEqual(3);
   const before = await turnNow(page);
+  const sent = page.waitForRequest((r) => r.url().endsWith("/api/turn") && r.method() === "POST");
   await page.getByRole("button", { name: "Small hint" }).click();
-  await page.waitForFunction((b) => JSON.parse(localStorage.getItem("tutoros.session.v2")!).state.turn > b, before);
-  const last = await page.evaluate(() => JSON.parse(localStorage.getItem("tutoros.session.v2")!).traces.at(-1));
-  expect(last.intent.phraseRule).toBe("P_HINT");
-  expect(last.event.source).toBe("help-option");
+  const body = (await sent).postDataJSON();
+  expect(body.event).toMatchObject({ type: "text", text: "Small hint", source: "help-option" });
+  await page.waitForFunction((b) => JSON.parse(localStorage.getItem("tutoros.session.v3")!).view.turn > b, before);
+  // Nothing internal comes back: no trace, no rule names, no policy.
+  const stored = await page.evaluate(() => localStorage.getItem("tutoros.session.v3")!);
+  for (const leak of ['"trace', '"rule"', "P_HINT", '"decision"', '"seed"']) expect(stored).not.toContain(leak);
   await expect(page.getByRole("button", { name: "Explain differently" })).toBeVisible();
   // The full transcript is still one click away.
   await openMenu(page);
   await page.getByRole("button", { name: "Transcript" }).click();
-  const n = await page.evaluate(() => JSON.parse(localStorage.getItem("tutoros.session.v2")!).state.transcript.length);
+  const n = await page.evaluate(() => JSON.parse(localStorage.getItem("tutoros.session.v3")!).view.transcript.length);
   await expect(page.locator(".transcript li")).toHaveCount(n);
 });
 
@@ -90,22 +93,25 @@ test("session resumes after reload, and a tampered session is refused", async ({
   await expect(await say(page, "3x = 15")).toContainText(/balanced|both sides/);
 
   await page.evaluate(() => {
-    const k = "tutoros.session.v2";
+    const k = "tutoros.session.v3";
     const s = JSON.parse(localStorage.getItem(k)!);
-    s.state.mastery.pKnown = 0.99;
+    // The sealed state is encrypted and authenticated: change one character of it.
+    const i = 40;
+    s.sealed = s.sealed.slice(0, i) + (s.sealed[i] === "A" ? "B" : "A") + s.sealed.slice(i + 1);
     localStorage.setItem(k, JSON.stringify(s));
   });
   await page.reload();
   await page.getByLabel("Your answer or message").fill("x = 5");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.locator(".error")).toContainText("can't be verified");
+  await expect(page.locator(".error")).toContainText("can't be resumed");
   await page.getByRole("button", { name: "Start a new lesson" }).click();
   await expect(page.locator(".note.active")).toContainText("3x + 5 = 20");
   await expect(page.locator(".nb-row.invalid, .nb-row.valid")).toHaveCount(0);
 });
 
-test("mobile: the margin moves under its line and nothing scrolls sideways", async ({ browser }) => {
+test("mobile: the margin moves under its line and nothing scrolls sideways", async ({ browser, baseURL }) => {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await signInVia(ctx, baseURL!);
   const page = await ctx.newPage();
   await start(page);
   await say(page, "3x = 25");

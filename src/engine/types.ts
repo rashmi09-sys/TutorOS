@@ -101,6 +101,23 @@ export interface BoardEntry {
   observed?: ObservedOperation;
 }
 
+/**
+ * A client-facing tag for a tutor turn, derived on the server from the policy rule so that rule names and the
+ * policy itself never reach the browser.
+ */
+export type Cue =
+  | "fresh" // a new problem was just presented
+  | "solved_guided" // the problem solved together is done; moving on to try one alone
+  | "summary" // end-of-lesson summary
+  | "small_example"
+  | "your_move"
+  | "idea" // a concept explanation
+  | "worked_solution"
+  | "ans_done" // (geometry/physics) the student's answer finished the question
+  | "ans_ok" // (geometry/physics) a right answer to a sub-question
+  | "ans_part"
+  | "ans_bad";
+
 export interface Message {
   role: "tutor" | "student";
   text: string;
@@ -110,7 +127,10 @@ export interface Message {
   /** Board entry this tutor turn is about. */
   anchor?: string;
   focus?: FocusRole[];
+  /** The policy rule that produced this turn. Server-side only: the client view replaces it with `cue`. */
   rule?: string;
+  /** What the page needs to know about this turn (labels, help buttons, answer marks); set by the server view. */
+  cue?: Cue;
   hintLevel?: number;
   stage?: TeachingStage;
   /** A whiteboard picture this turn switches to (VISUALIZE). */

@@ -11,5 +11,5 @@ export default defineConfig({
   },
   webServer: process.env.E2E_BASE_URL
     ? undefined
-    : { command: "npm run build && npx next start -p 3100", url: "http://localhost:3100/api/health", reuseExistingServer: true, timeout: 180_000 },
+    : { command: "npm run build && npx next start -p 3100", url: "http://localhost:3100/signin", reuseExistingServer: true, timeout: 180_000 },
 });

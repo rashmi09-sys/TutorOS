@@ -5,20 +5,21 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LESSONS, type LessonInfo } from "@/lib/lessons";
 import { clearSession, loadSession } from "@/lib/storage";
-import type { SessionState } from "@/engine/types";
-import type { LessonId, SubjectState } from "@/engine/subjects/types";
+import type { LessonId } from "@/engine/subjects/types";
+import type { AlgebraView as SessionState, SubjectView as SubjectState } from "@/engine/view-types";
 import { MathLine } from "./student/MathLine";
 import { ForceFigure, TriangleFigure } from "./lesson/figures";
 import { Capability } from "./lesson/LessonShell";
 import type { TeacherInfo } from "@/lib/useTutorSession";
+import { handleUnauthorized, signOut } from "@/lib/auth/client";
 
 type Progress = { label: string; finished: boolean } | null;
 
 /** Where the student is in a lesson, from the session saved in this browser. */
 function progressOf(id: LessonId): Progress {
   const s = loadSession(id);
-  const st = s?.state;
-  if (!st || !s?.stateSig || st.turn === 0) return null;
+  const st = s?.view;
+  if (!st || !s?.sealed || st.turn === 0) return null;
   if (id === "algebra") {
     const a = st as SessionState;
     if (a.phase === "COMPLETE") return { label: `Finished: ${a.mastery.observations.filter((o) => o.kind === "transfer" && o.correct).length} fresh problems solved on your own`, finished: true };
@@ -51,9 +52,9 @@ export function Home() {
     refresh();
     window.addEventListener("pageshow", refresh);
     window.addEventListener("focus", refresh);
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then((h) => setTeacher({ mode: h.teacher.mode, name: h.teacher.mode === "llm" ? `${h.teacher.provider}:${h.teacher.model}` : "deterministic" }))
+    fetch("/api/health", { cache: "no-store" })
+      .then((r) => (handleUnauthorized(r) ? null : r.json()))
+      .then((h) => setTeacher(h?.teacher ?? null))
       .catch(() => setTeacher(null));
     return () => {
       window.removeEventListener("pageshow", refresh);
@@ -65,6 +66,9 @@ export function Home() {
     <div className="home">
       <header className="home-bar">
         <span className="home-brand">TutorOS</span>
+        <button type="button" className="btn quiet home-signout" onClick={() => void signOut()}>
+          Sign out
+        </button>
       </header>
       <main className="home-main">
         <section className="home-intro">
@@ -86,7 +90,7 @@ export function Home() {
         </ul>
         <footer className="home-foot">
           <Capability teacher={teacher} />
-          <p>No sign-up and no name. Your work stays in this browser.</p>
+          <p>Your work stays in this browser until you sign out.</p>
         </footer>
       </main>
     </div>

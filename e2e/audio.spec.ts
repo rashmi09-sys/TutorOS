@@ -6,12 +6,12 @@ import { mockSpeech, recCount, speechLog, spokenTexts } from "./speech-mock";
  * The student decides when anything makes a sound. Speech APIs are mocked (see speech-mock.ts):
  * the mock is a real queue, so these tests see exactly what the app asked the browser to say, in order.
  */
-const KEY = "tutoros.session.v2";
-const turnNow = (page: Page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.state?.turn ?? 0, KEY);
+const KEY = "tutoros.session.v3";
+const turnNow = (page: Page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.view?.turn ?? 0, KEY);
 /** The first spoken sentence of the latest tutor message, as the voice receives it. */
 const firstSentence = (page: Page) =>
   page.evaluate((k) => {
-    const s = JSON.parse(localStorage.getItem(k)!).state;
+    const s = JSON.parse(localStorage.getItem(k)!).view;
     const t = [...s.transcript].reverse().find((m: { role: string }) => m.role === "tutor").text as string;
     return t.split(/(?<=[.?!])\s+/)[0];
   }, KEY);

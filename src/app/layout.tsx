@@ -14,6 +14,9 @@ export const metadata: Metadata = {
   description: "Short tutoring lessons in algebra, physics and geometry. Every answer is checked exactly; hints come one step at a time.",
 };
 
+// Every page is rendered per request: the session is checked on the server and the CSP nonce is per request.
+export const dynamic = "force-dynamic";
+
 export const viewport: Viewport = { width: "device-width", initialScale: 1 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

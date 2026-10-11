@@ -13,7 +13,9 @@
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "tts:smoke": "tsx scripts/tts-smoke.ts"
+    "tts:smoke": "tsx scripts/tts-smoke.ts",
+    "auth:hash": "tsx scripts/hash-password.ts",
+    "auth:secret": "node -e \"process.stdout.write(require('crypto').randomBytes(48).toString('base64url')+'\\n')\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.60.0",
@@ -21,16 +23,15 @@
     "@fontsource-variable/lexend": "^5.3.0",
     "@google-cloud/text-to-speech": "^7.1.1",
     "@vercel/oidc": "^4.0.0",
-    "eslint-config-next": "^16.3.8",
     "google-auth-library": "^11.2.0",
-    "katex": "^0.16.11",
-    "next": "^16.3.8",
+    "katex": "^0.18.11",
+    "next": "^15.5.27",
     "react": "19.1.1",
     "react-dom": "19.1.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@next/eslint-plugin-next": "^15.5.4",
+    "@next/eslint-plugin-next": "^15.5.27",
     "@playwright/test": "^1.56.0",
     "@types/katex": "^0.16.7",
     "@types/node": "^22.10.0",
@@ -41,6 +42,10 @@
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.71.1",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "postcss": "^8.5.29",
+    "sharp": "^0.35.5"
   }
 }

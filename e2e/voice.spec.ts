@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, readAloudOff, test } from "./fixtures";
+import { expect, readAloudOff, test, signInVia } from "./fixtures";
 import { mockSpeech, recCount, spokenTexts, speechLog, type MockOpts } from "./speech-mock";
 
 /**
@@ -9,9 +9,9 @@ import { mockSpeech, recCount, spokenTexts, speechLog, type MockOpts } from "./s
  * exercised end to end. What this cannot prove: real recognition accuracy, real microphones, real
  * permission prompts, or real voices. Those need the manual device checks in docs/LIMITATIONS.md.
  */
-const KEY = "tutoros.session.v2";
+const KEY = "tutoros.session.v3";
 
-const turnNow = (page: Page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.state?.turn ?? 0, KEY);
+const turnNow = (page: Page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null")?.view?.turn ?? 0, KEY);
 
 async function start(page: Page, o?: MockOpts) {
   await mockSpeech(page, o);
@@ -48,13 +48,15 @@ test("start listening → partial transcript → Done submits the finalized word
   await page.waitForTimeout(1500); // a normal pause must not submit anything
   expect(await turnNow(page)).toBe(before);
   await page.evaluate(() => (window as unknown as { __say: (x: [string, boolean][]) => void }).__say([["three x", true], ["equals fifteen", false]]));
+  const sent = page.waitForRequest((r) => r.url().endsWith("/api/turn") && r.method() === "POST");
   await doneBtn(page).click();
-  await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).state.turn > (b as number), [KEY, before]);
+  const sentEvent = (await sent).postDataJSON().event;
+  await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).view.turn > (b as number), [KEY, before]);
   const s = await page.evaluate((k) => JSON.parse(localStorage.getItem(k)!), KEY);
-  const student = s.state.transcript.filter((m: { role: string }) => m.role === "student").at(-1);
+  const student = s.view.transcript.filter((m: { role: string }) => m.role === "student").at(-1);
   expect(student).toMatchObject({ text: "three x equals fifteen", via: "voice" });
-  expect(s.traces.at(-1).event.voice).toMatchObject({ endedBy: "done" });
-  expect(s.state.turn).toBe(before + 1); // exactly one submission
+  expect(sentEvent.voice).toMatchObject({ endedBy: "done" });
+  expect(s.view.turn).toBe(before + 1); // exactly one submission
   await expect(page.locator(".note.active")).toContainText("balanced");
 });
 
@@ -123,8 +125,8 @@ test("the browser stops listening on its own: silent resume (capped), then an ho
   await expect(page.locator(".nextline")).toHaveClass(/p-listening/);
   await page.evaluate(() => (window as unknown as { __say: (x: [string, boolean][]) => void }).__say([["equals fifteen", true]]));
   await doneBtn(page).click();
-  await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).state.turn > (b as number), [KEY, before]);
-  const last = await page.evaluate((k) => JSON.parse(localStorage.getItem(k)!).state.transcript.filter((m: { role: string }) => m.role === "student").at(-1).text, KEY);
+  await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).view.turn > (b as number), [KEY, before]);
+  const last = await page.evaluate((k) => JSON.parse(localStorage.getItem(k)!).view.transcript.filter((m: { role: string }) => m.role === "student").at(-1).text, KEY);
   expect(last).toBe("three x equals fifteen");
 });
 
@@ -139,11 +141,13 @@ test("duplicate recognition events are applied once", async ({ page }) => {
   });
   await expect(page.locator(".nl-live .final")).toHaveText("x equals 8");
   const before = await turnNow(page);
+  const sent = page.waitForRequest((r) => r.url().endsWith("/api/turn") && r.method() === "POST");
   await doneBtn(page).click();
-  await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).state.turn > (b as number), [KEY, before]);
+  const sentEvent = (await sent).postDataJSON().event;
+  await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).view.turn > (b as number), [KEY, before]);
   const s = await page.evaluate((k) => JSON.parse(localStorage.getItem(k)!), KEY);
-  expect(s.state.transcript.filter((m: { role: string }) => m.role === "student").at(-1).text).toBe("x equals 8");
-  expect(s.traces.at(-1).event.voice.duplicateEventsIgnored).toBeGreaterThanOrEqual(2);
+  expect(s.view.transcript.filter((m: { role: string }) => m.role === "student").at(-1).text).toBe("x equals 8");
+  expect(sentEvent.voice.duplicateEventsIgnored).toBeGreaterThanOrEqual(2);
 });
 
 test("rapid start/cancel: one live recognizer at a time, nothing submitted", async ({ page }) => {
@@ -168,24 +172,26 @@ test("spoken help requests: 'I'm stuck', 'explain it another way', challenging t
     await listening(page);
     await page.evaluate((t) => (window as unknown as { __say: (x: [string, boolean][]) => void }).__say([[t, true]]), text);
     await doneBtn(page).click();
-    await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).state.turn > (b as number), [KEY, before]);
-    return page.evaluate((k) => JSON.parse(localStorage.getItem(k)!).traces.at(-1), KEY);
+    await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).view.turn > (b as number), [KEY, before]);
+    // The tutor's reply, as the page has it (text and teaching stage — no internal rule names).
+    return page.evaluate((k) => JSON.parse(localStorage.getItem(k)!).view.transcript.at(-1), KEY);
   };
   let t = await speak("I'm stuck");
-  expect(t.decision.stage).toBe("NOTICE");
+  expect(t.stage).toBe("NOTICE");
   await expect(page.locator(".note.active .note-kind")).toContainText("Notice");
   t = await speak("explain it another way");
-  expect(t.decision.rule).toMatch(/^R24_REPHRASE/);
+  expect(t.text).toContain("Let's look at one piece only");
   t = await speak("I think your answer is wrong");
-  expect(t.decision.rule).toMatch(/^R19_DISPUTE/);
+  expect(t.text).toContain("I haven't given an answer yet");
   t = await speak("I need more help");
   t = await speak("I need more help");
-  expect(t.decision.stage).toBe("TRY");
+  expect(t.stage).toBe("TRY");
   t = await speak("why");
-  expect(t.decision.rule).toBe("R18_CONCEPT_WHY_INVERSE_CONSTANT");
+  expect(t.text).toMatch(/^Because x has 5 added to it/);
+  expect(t.cue).toBe("idea");
   // No early leaks anywhere in that exchange.
   const s = await page.evaluate((k) => JSON.parse(localStorage.getItem(k)!), KEY);
-  for (const m of s.state.transcript.filter((x: { role: string }) => x.role === "tutor")) expect(m.text).not.toMatch(/x = 5\b|3x = 15/);
+  for (const m of s.view.transcript.filter((x: { role: string }) => x.role === "tutor")) expect(m.text).not.toMatch(/x = 5\b|3x = 15/);
 });
 
 test("tutor speech is never recorded, and the mic never opens by itself", async ({ page }) => {
@@ -215,7 +221,7 @@ test("tutor speech is never recorded, and the mic never opens by itself", async 
   expect(spoken.some((x) => /[=+“”]/.test(x))).toBe(false);
 });
 
-test("keyboard only: Tab to the mic, Enter to listen, Enter on Done to send; mobile layout holds while listening", async ({ page, browser }) => {
+test("keyboard only: Tab to the mic, Enter to listen, Enter on Done to send; mobile layout holds while listening", async ({ page, browser, baseURL }) => {
   await start(page);
   await mic(page).focus();
   await page.keyboard.press("Enter");
@@ -224,10 +230,11 @@ test("keyboard only: Tab to the mic, Enter to listen, Enter on Done to send; mob
   await expect(doneBtn(page)).toBeFocused(); // focus moves to Done as soon as there is something to send
   const before = await turnNow(page);
   await page.keyboard.press("Enter");
-  await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).state.turn > (b as number), [KEY, before]);
+  await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).view.turn > (b as number), [KEY, before]);
   await expect(page.locator(".note.active")).toContainText("how you got");
 
   const ctx = await browser.newContext({ viewport: { width: 375, height: 740 } });
+  await signInVia(ctx, baseURL!);
   const m = await ctx.newPage();
   await start(m);
   await mic(m).click();
@@ -255,10 +262,10 @@ test("Edit moves what was heard into the text box unsent; the student fixes it a
   expect(await turnNow(page)).toBe(before); // nothing sent by Edit
   await box.fill("I will do BODMAS multiplication.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).state.turn > (b as number), [KEY, before]);
+  await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).view.turn > (b as number), [KEY, before]);
   const s = await page.evaluate((k) => JSON.parse(localStorage.getItem(k)!), KEY);
-  expect(s.state.turn).toBe(before + 1);
-  expect(s.traces.at(-1).decision.rule).toBe("R31_OP_EVALUATION_ORDER");
+  expect(s.view.turn).toBe(before + 1);
+  expect(s.view.transcript.at(-1).text).toContain("BODMAS is the order for working out an expression");
 });
 
 test("spoken: the reported BODMAS conversation is understood and repaired", async ({ page }) => {
@@ -268,25 +275,20 @@ test("spoken: the reported BODMAS conversation is understood and repaired", asyn
     await listening(page);
     await page.evaluate((t) => (window as unknown as { __say: (x: [string, boolean][]) => void }).__say([[t, true]]), text);
     await doneBtn(page).click();
-    await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).state.turn > (b as number), [KEY, before]);
-    return page.evaluate((k) => JSON.parse(localStorage.getItem(k)!).traces.at(-1), KEY);
+    await page.waitForFunction(([k, b]) => JSON.parse(localStorage.getItem(k as string)!).view.turn > (b as number), [KEY, before]);
+    return page.evaluate((k) => JSON.parse(localStorage.getItem(k)!).view.transcript.at(-1), KEY);
   };
   await speak("I'm stuck");
   let t = await speak("I will do BODMAS multiplication.");
-  expect(t.decision.rule).toBe("R31_OP_EVALUATION_ORDER");
-  expect(t.opCheck.verdict).toBe("evaluation_order");
+  expect(t.text).toContain("BODMAS is the order for working out an expression");
   await expect(page.locator(".note.active")).toContainText("+ 5");
   t = await speak("I said will do multiplication.");
-  expect(t.decision.rule).toBe("R31b_OP_EVALUATION_ORDER_REPAIR");
+  expect(t.text).toContain("I heard you say multiplication");
   await expect(page.locator(".note.active")).toContainText("heard you say multiplication");
   await expect(page.locator(".note.active")).not.toContainText("park that");
   t = await speak("subtract five from both sides");
-  expect(t.decision.rule).toBe("R30_OP_RIGHT_MOVE");
-
-  // The recorded turn (kept in this browser with the session) shows the context and the exact check.
-  const traces = await page.evaluate((k) => JSON.parse(localStorage.getItem(k)!).traces, KEY);
-  const rep = traces.find((x: { event: { text?: string } }) => x.event.text === "I said will do multiplication.");
-  expect(rep.context.repeat).toBe(true);
-  expect(rep.opCheck.verdict).toBe("evaluation_order");
-  expect(rep.llmCalls.filter((c: { kind: string }) => c.kind === "model")).toHaveLength(0);
+  expect(t.text).toMatch(/^Yes\. Subtracting 5 undoes the \+ 5/);
+  expect(t.stage).toBe("TRY");
+  // (Which rule fired, the operation check and the model-call count are verified server-side in
+  // tests/understand.test.ts and tests/language.test.ts; the browser no longer receives traces.)
 });

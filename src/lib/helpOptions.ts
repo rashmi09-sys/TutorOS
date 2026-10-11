@@ -1,5 +1,5 @@
 import { whyTopic } from "@/engine/why";
-import type { SessionState } from "@/engine/types";
+import type { AlgebraView as SessionState } from "@/engine/view-types";
 
 export interface HelpOption {
   label: string;
@@ -22,12 +22,12 @@ export function helpOptions(state: SessionState | null): HelpOption[] {
   if (!last) return [HINT, STUCK];
   if (last.action === "WAIT") return []; // they said they're thinking: don't put buttons in their way
   const canWhy = !!whyTopic(state);
-  const rule = last.rule ?? "";
-  if (rule.startsWith("R1_") || rule === "R0_PRESENT_PROBLEM") return [HINT, STUCK]; // a fresh problem: nothing explained yet
+  const cue = last.cue;
+  if (cue === "fresh" || cue === "solved_guided") return [HINT, STUCK]; // a fresh problem: nothing explained yet
   if (last.stage === "NOTICE") return [HINT, DIFFERENT];
   if (last.stage === "THINK") return [DIFFERENT, HINT, ...(canWhy ? [WHY] : [])];
-  if (last.stage === "TRY" || (last.action === "EXPLAIN" && !rule.startsWith("R18"))) return [...(canWhy ? [WHY] : []), DIFFERENT, STUCK].slice(0, 3);
-  if (rule.startsWith("R18")) return [DIFFERENT, HINT];
+  if (last.stage === "TRY" || (last.action === "EXPLAIN" && cue !== "idea")) return [...(canWhy ? [WHY] : []), DIFFERENT, STUCK].slice(0, 3);
+  if (cue === "idea") return [DIFFERENT, HINT];
   if (last.action === "VERIFY") return [...(canWhy ? [WHY] : []), HINT, STUCK].slice(0, 3);
   return [HINT, STUCK];
 }

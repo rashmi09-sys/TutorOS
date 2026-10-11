@@ -260,3 +260,20 @@ Done before changing anything, by reading the code and driving the real engines 
 - **Welcome state:** "Ready to figure this out?" with **Start Lesson** and a Sound on/off toggle. Nothing plays until Start; the choice is kept for the tab and shown in the menu. Returning to a lesson in progress skips the welcome ("Welcome back"); Restart starts a clean lesson.
 - **Stages:** Learn Together (Let's work it out) · Try It Yourself (A new problem) · Challenge Yourself (A different twist). The behaviour behind them is unchanged.
 - **Tone:** shorter replies (the balance picture, help openers, the reveal, the off-topic redirect); a bare "why?" in physics and geometry now explains the tutor's latest step (`whyLast`) instead of a general paragraph.
+
+## v8: sign-in and hiding internals (11 Oct 2026)
+
+The full security review, architecture and remaining risks are in [SECURITY.md](SECURITY.md).
+
+What it found:
+- Every page and API was public, including the billable voice route.
+- `/api/turn` returned the full decision trace, and the browser stored it.
+- The browser held the full lesson state: answers to unreached problems, the generator seed and the teaching memory.
+- The client bundle included the misconception probes.
+- `/api/health` disclosed configuration.
+- 400 responses listed schema paths.
+- The maths renderer could return raw input as HTML if KaTeX threw.
+- No security headers were set.
+- Next 15.5.4 had critical advisories.
+
+All of these are fixed. Each fix has a unit or browser test, listed in SECURITY.md.

@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SessionState, StudentEvent, TurnTrace } from "@/engine/types";
+import type { StudentEvent } from "@/engine/types";
 import type { LessonId } from "@/engine/subjects/types";
+import type { AlgebraView } from "@/engine/view-types";
 import { clearSession, loadSession, saveSession } from "./storage";
+import { handleUnauthorized } from "./auth/client";
 
 export type TeacherInfo = { mode: "deterministic" | "llm"; name: string };
 
@@ -15,15 +17,14 @@ function eventId() {
 /**
  * Client session controller.
  *
- * The server is stateless; the browser holds the session state plus the HMAC
- * signature the server issued for it (so it can't be edited), and resumes it
- * after a reload. Every event carries an id: a network retry re-sends the same
+ * The server is stateless; the browser holds a redacted view of the lesson (to
+ * draw the page) and the sealed state the server issued (opaque and encrypted,
+ * so it can't be read or edited), and resumes both after a reload. Every event carries an id: a network retry re-sends the same
  * event against the same base state (safe), and a late response for a state
  * we've already moved past is discarded.
  */
-export function useTutorSession<S extends { turn: number; sessionId: string } = SessionState>(lesson: LessonId = "algebra") {
+export function useTutorSession<S extends { turn: number; sessionId: string } = AlgebraView>(lesson: LessonId = "algebra") {
   const [state, setState] = useState<S | null>(null);
-  const [traces, setTraces] = useState<TurnTrace[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsReset, setNeedsReset] = useState(false);
@@ -34,23 +35,20 @@ export function useTutorSession<S extends { turn: number; sessionId: string } = 
   const [recovering, setRecovering] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const stateRef = useRef<S | null>(null);
-  const sigRef = useRef<string | null>(null);
-  const tracesRef = useRef<TurnTrace[]>([]);
+  const sealedRef = useRef<string | null>(null);
   const inflight = useRef(false);
 
   useEffect(() => {
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then((h) => setTeacher({ mode: h.teacher.mode, name: h.teacher.mode === "llm" ? `${h.teacher.provider}:${h.teacher.model}` : "deterministic" }))
+    fetch("/api/health", { cache: "no-store" })
+      .then((r) => (handleUnauthorized(r) ? null : r.json()))
+      .then((h) => h && setTeacher(h.teacher))
       .catch(() => setTeacher({ mode: "deterministic", name: "deterministic" }));
     const stored = loadSession(lesson);
-    if (stored?.state && stored.stateSig) {
-      stateRef.current = stored.state as unknown as S;
-      sigRef.current = stored.stateSig;
-      tracesRef.current = stored.traces ?? [];
-      setState(stored.state as unknown as S);
-      setTraces(stored.traces ?? []);
-      setResumed(stored.state.turn > 0);
+    if (stored?.view && stored.sealed) {
+      stateRef.current = stored.view as unknown as S;
+      sealedRef.current = stored.sealed;
+      setState(stored.view as unknown as S);
+      setResumed(stored.view.turn > 0);
     }
   }, [lesson]);
 
@@ -81,7 +79,8 @@ export function useTutorSession<S extends { turn: number; sessionId: string } = 
     const ac = new AbortController();
     abortRef.current = ac;
     try {
-      const res = await post({ lesson, state: stateRef.current, stateSig: sigRef.current, event }, ac.signal);
+      const res = await post({ lesson, sealed: sealedRef.current, event }, ac.signal);
+      if (handleUnauthorized(res)) throw new Error("Your session has ended. Please sign in again.");
       const data = await res.json();
       if (res.status === 409) {
         setNeedsReset(true);
@@ -90,15 +89,13 @@ export function useTutorSession<S extends { turn: number; sessionId: string } = 
       if (res.status === 429) throw new Error("You're going a bit fast — wait a moment and try again.");
       if (!res.ok) throw new Error(`${data.error ?? "Something went wrong"} (ref ${data.requestId ?? "?"})`);
       if (data.duplicate || (stateRef.current?.turn ?? -1) !== baseTurn) return true; // already applied / stale
-      stateRef.current = data.state;
-      sigRef.current = data.stateSig;
-      tracesRef.current = [...tracesRef.current, data.trace];
-      setState(data.state);
-      setTraces(tracesRef.current);
+      stateRef.current = data.view;
+      sealedRef.current = data.sealed;
+      setState(data.view);
       setTeacher(data.teacher);
       setResumed(false);
-      setLastUtterance({ text: data.utterance, id: data.trace.turnId });
-      saveSession({ state: data.state, stateSig: data.stateSig, traces: tracesRef.current, teacher: data.teacher, updatedAt: new Date().toISOString() }, lesson);
+      setLastUtterance({ text: data.utterance, id: data.turnId });
+      saveSession({ view: data.view, sealed: data.sealed, teacher: data.teacher, updatedAt: new Date().toISOString() }, lesson);
       return true;
     } catch (e) {
       if (ac.signal.aborted) return false; // cancelled by the student: state unchanged (the server is stateless)
@@ -120,15 +117,13 @@ export function useTutorSession<S extends { turn: number; sessionId: string } = 
   const restart = useCallback(async () => {
     clearSession(lesson);
     stateRef.current = null;
-    sigRef.current = null;
-    tracesRef.current = [];
+    sealedRef.current = null;
     setState(null);
-    setTraces([]);
     setLastUtterance(null);
     setNeedsReset(false);
     setResumed(false);
     await send({ type: "start" });
   }, [send, lesson]);
 
-  return { state, traces, busy, error, needsReset, teacher, resumed, recovering, lastUtterance, pendingStudent, send, restart, cancel };
+  return { state, busy, error, needsReset, teacher, resumed, recovering, lastUtterance, pendingStudent, send, restart, cancel };
 }
